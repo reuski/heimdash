@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>heimdash</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/datastar.js"></script>
+  </head>
+  <body>
+    <main>
+      <header id="hostline">
+        <h1>heimdash</h1>
+        <span id="uptime"></span>
+      </header>
+
+      <section id="metrics">
+        <h2>Disks</h2>
+        <ul id="disks"></ul>
+      </section>
+
+      <section>
+        <h2>Services</h2>
+        <ul id="services"></ul>
+      </section>
+    </main>
+
+    <div hidden data-on-interval__duration.30s.leading="@get('/poll')"></div>
+  </body>
+</html>
