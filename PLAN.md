@@ -33,24 +33,50 @@ package dir, so `build.zig` registers each asset via
 `exe_mod.addAnonymousImport("name", …)`. `src/main.zig` imports them as
 `@embedFile("index.html")` etc.
 
-## Next: prove it on a Linux host
+## Shipped: system vitals + CRT restyle
 
-The whole point of v1 is to actually run on the target. None of that
-has happened yet.
+CPU load and memory landed in the `#metrics` section, proven on the Linux
+host. `readLoadAvg` (`/proc/loadavg`, bar = `load / nproc` via
+`std.Thread.getCpuCount`) and `readMemInfo` (`/proc/meminfo`, bar =
+used / total) feed `renderBarRow`, which now backs CPU, memory, and every
+disk row. Reused the existing `/poll` morph — zero client/wire change; the
+new readers stub to zero off‑Linux like `readDiskFree`.
 
-1. **CI green.** Push and `gh run watch`. `nix flake check` and
-   `nix build .#default` must pass on a Linux runner — the maintainer
-   machine has no local Nix, so CI is the canonical Linux build.
-2. **Smoke test on Linux.** `nix run` (or the built binary) on a real
-   NixOS box. Confirm hostname + uptime populate, disk bars reflect
-   real `statfs` output, the 30 s `data-on-interval` polls land, and
-   Datastar morphs the metrics section without flicker.
-3. **NixOS module dry‑run.** Build the module against a test config in
-   a VM or nixos‑rebuild dry‑activate. Verify the hardened systemd unit
-   starts, binds to `127.0.0.1:8080`, and survives a restart.
+The frontend was restyled into a retro CRT/mainframe terminal: monospace,
+phosphor palette with a light paper‑terminal variant, framed window with a
+title bar, segmented LED meters, labelled‑rule section headers, inverse‑video
+service cells. Pure `index.html` + `style.css`; all morph targets unchanged.
 
-If any of those surface bugs, fix in `src/main.zig` and re‑verify. Do
-not start v2 work before all three pass.
+## Next: service status
+
+The service cards are dumb links. Probe each service and show
+reachable / unreachable, reusing the SSE morph — the page renders the links
+instantly, a slow poll fills status in. No new visible data is invented; this
+is the first feature that reaches *off the box*.
+
+- **Config (additive).** Service gains an optional `check` URL:
+  `{ name, url, check? }`; probe `check`, falling back to `url`. Existing
+  configs unaffected — honours the additive‑only contract.
+- **`GET /poll/services`.** Probes every service with a short timeout
+  (~2 s), emits one `datastar-patch-elements` morphing `<ul id="services">`
+  with a per‑card status. A second `data-on-interval` at a slower cadence
+  (~60 s) than metrics' 30 s — the foreshadowed fast/slow split, same SSE
+  helper.
+- **Probe.** `std.Io.net` connect + minimal HTTP GET; classify by connect
+  success and status `< 500`. A side‑effect‑isolated reader like the metric
+  readers. First paint renders cards as `checking…`.
+- **Indicator.** A `.status` glyph per card (up / down / checking), styled
+  in the existing CRT palette. New stable hooks inside the services markup;
+  update `renderServices` and the morph emitter together.
+
+**Concurrency — the real decision this forces.** The accept loop serves one
+connection at a time, so a blocking probe round (N services × timeout) would
+freeze `/` and `/poll` for its whole duration. This increment must make the
+loop concurrent: spawn a detached `std.Thread` per accepted stream, keeping
+one arena per connection exactly as today (`gpa` is already thread‑safe).
+That is the minimum. Keep probes serial within the request first; parallelise
+per‑probe only if N × timeout latency actually hurts — YAGNI until measured.
+No auth needed: this is read‑only egress. Auth arrives only at *control*.
 
 ## Endpoints (implemented)
 
@@ -86,20 +112,24 @@ Any other path returns `404 text/plain`.
   "mounts": ["/", "/home", "/mnt/data"],
   "services": [
     { "name": "Jellyfin", "url": "http://media.lan:8096" },
-    { "name": "Nextcloud", "url": "https://cloud.lan" }
+    {
+      "name": "Nextcloud",
+      "url": "https://cloud.lan",
+      "check": "https://cloud.lan/status.php"
+    }
   ]
 }
 ```
 
-No `controlPath`, no `healthcheck`, no `icon` yet. Add fields only
-when something consumes them.
+`check` is optional and consumed by `/poll/services` (next step); probes
+fall back to `url` when it is absent. No `controlPath`, no `icon` yet — add
+fields only when something consumes them.
 
 ## What stays deferred
 
 Auth, TLS in the Zig server (reverse proxy handles it), Prometheus,
-service start/stop, WebSockets, persistence, logs UI, i18n, CPU/RAM
-gauges, per‑metric SSE channels, a `services.zig` abstraction, any
-third‑party Zig library. Every one of these is a fine v2+ topic; none
+service start/stop, WebSockets, persistence, logs UI, i18n, per‑metric
+SSE channels, a `services.zig` abstraction, any third‑party Zig library. Every one of these is a fine v2+ topic; none
 belongs in the v1 server.
 
 ## After v1 — illustrative, not committed
@@ -110,9 +140,6 @@ Each future addition is intended to be small, local, and reversible:
   `renderMetrics`. One function.
 - New service link → one entry in the Nix module config. Zero Zig
   touched.
-- Faster updates for part of the page → split `/poll` into `/poll/fast`
-  and `/poll/slow` with different `data-on-interval` durations. Same
-  SSE helper.
 - Live log tail → keep the SSE connection open and yield more events.
   Wire format and client unchanged.
 - Service control → new POST endpoint returning a

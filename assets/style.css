@@ -1,31 +1,36 @@
 :root {
-  --bg: #fafaf9;
-  --fg: #1c1917;
-  --muted: #78716c;
-  --accent: #0369a1;
-  --card: #ffffff;
-  --border: #e7e5e4;
-  --bar-bg: #e7e5e4;
-  --bar-fg: #0369a1;
-  --radius: 8px;
+  color-scheme: dark light;
+
+  --bg: #080b0a;
+  --panel: #0c110f;
+  --fg: #b8f0cb;
+  --dim: #4f7e63;
+  --accent: #34f58b;
+  --border: #173a2a;
+  --track: #0f1c16;
+  --glow: rgba(52, 245, 139, 0.35);
+  --scanline: rgba(0, 0, 0, 0.25);
+
+  --radius: 2px;
+  --gap: 1.75rem;
+
   font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
+    ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas,
+    "DejaVu Sans Mono", monospace;
+  font-size: 15px;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #0c0a09;
-    --fg: #f5f5f4;
-    --muted: #a8a29e;
-    --accent: #38bdf8;
-    --card: #1c1917;
-    --border: #292524;
-    --bar-bg: #292524;
-    --bar-fg: #38bdf8;
+    --bg: #ded8c6;
+    --panel: #e9e4d5;
+    --fg: #16241a;
+    --dim: #5c6b58;
+    --accent: #117139;
+    --border: #b2ab94;
+    --track: #ccc6b2;
+    --glow: transparent;
+    --scanline: rgba(0, 0, 0, 0.05);
   }
 }
 
@@ -35,101 +40,252 @@
 
 body {
   margin: 0;
+  min-height: 100vh;
   background: var(--bg);
   color: var(--fg);
   line-height: 1.5;
+  letter-spacing: 0.02em;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    var(--scanline) 0 1px,
+    transparent 1px 3px
+  );
 }
 
 main {
-  max-width: 64rem;
-  margin: 0 auto;
-  padding: 2rem 1.25rem;
-  display: grid;
-  gap: 2rem;
+  max-width: 60rem;
+  margin: 2rem auto;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 0 40px var(--glow);
 }
 
-header {
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.7rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.brand {
+  color: var(--accent);
+  font-weight: 700;
+  text-shadow: 0 0 10px var(--glow);
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.live .dot {
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--glow);
+  animation: blink 1.4s steps(1, end) infinite;
+}
+
+.screen {
+  display: grid;
+  gap: var(--gap);
+  padding: 1.5rem;
+}
+
+#hostline {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
+  padding-bottom: 1rem;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 0.75rem;
 }
 
-header h1 {
+#hostline h1 {
   margin: 0;
-  font-size: 1.5rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-shadow: 0 0 12px var(--glow);
+}
+
+#hostline h1::before {
+  content: "› ";
+  color: var(--accent);
+}
+
+#hostline h1::after {
+  content: "▋";
+  margin-left: 0.1em;
+  color: var(--accent);
+  animation: blink 1.1s steps(1, end) infinite;
 }
 
 #uptime {
-  color: var(--muted);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
-  font-size: 0.875rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.1em;
 }
 
 h2 {
-  margin: 0 0 0.75rem;
-  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  font-size: 0.7rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-  font-weight: 600;
+  letter-spacing: 0.25em;
+  color: var(--dim);
+}
+
+h2::before {
+  content: "▮";
+  color: var(--accent);
+}
+
+h2::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+#metrics > h2:not(:first-child) {
+  margin-top: var(--gap);
 }
 
 ul {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+#metrics li {
   display: grid;
-  gap: 0.5rem;
+  grid-template-columns: minmax(7rem, 1fr) 2.5fr minmax(6rem, auto);
+  gap: 1rem;
+  align-items: center;
+  padding: 0.35rem 0;
+}
+
+#metrics .label {
+  color: var(--fg);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#metrics .bar {
+  position: relative;
+  height: 0.8rem;
+  background: var(--track);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+#metrics .bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--glow);
+}
+
+#metrics .bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 5px,
+    var(--panel) 5px 7px
+  );
+}
+
+#metrics .free {
+  text-align: right;
+  color: var(--accent);
+  text-shadow: 0 0 8px var(--glow);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
 }
 
 #services {
-  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.75rem;
 }
 
 #services a {
   display: block;
-  padding: 0.75rem 1rem;
-  background: var(--card);
+  padding: 0.7rem 0.9rem;
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--fg);
   text-decoration: none;
-  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
 }
 
-#services a:hover {
-  border-color: var(--accent);
+#services a::before {
+  content: "▸ ";
   color: var(--accent);
 }
 
-#disks li {
-  display: grid;
-  grid-template-columns: minmax(8rem, 1fr) 2fr auto;
-  gap: 1rem;
-  align-items: center;
-  padding: 0.5rem 0;
+#services a:hover,
+#services a:focus-visible {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 0 14px var(--glow);
+  outline: none;
 }
 
-#disks .bar {
-  background: var(--bar-bg);
-  border-radius: 999px;
-  height: 0.5rem;
-  overflow: hidden;
+#services a:hover::before,
+#services a:focus-visible::before {
+  color: var(--bg);
 }
 
-#disks .bar > span {
-  display: block;
-  background: var(--bar-fg);
-  height: 100%;
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
 }
 
-#disks .free {
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  font-size: 0.875rem;
+@media (prefers-reduced-motion: reduce) {
+  .live .dot,
+  #hostline h1::after {
+    animation: none;
+  }
 }

@@ -45,6 +45,32 @@ The maintainer machine has no local Nix. CI is the canonical verification — pu
 - No premature abstraction. Three similar lines beat a wrong helper. Extract when a third caller appears, not before.
 - No backwards‑compat shims, no `// removed` notes, no unused `_var` renames. Delete dead code completely.
 
+## Visual language
+
+A **retro mainframe CRT terminal**: the orange plasma glow of a PLATO panel
+(*The Friendly Orange Glow*), green‑phosphor VT screens, sci‑fi console
+readouts. Atmosphere never costs legibility.
+
+- **Monochrome phosphor.** One accent channel on a near‑black field; all
+  colour lives in `:root` custom properties — never hard‑code a colour in a
+  rule. Green (`--accent`) is live, amber the heritage swap. Dark is primary;
+  `prefers-color-scheme: light` is a paper terminal with `--glow` off.
+- **Glow, not gloss.** Luminance via `text-shadow`/`box-shadow` in `--glow`.
+  No depth shadows, no glass, no gradients but the structural ones (scanlines,
+  meters).
+- **Monospace only.** The `ui-monospace` stack, `UPPERCASE` letter‑spaced
+  labels, `tabular-nums` figures.
+- **Sharp chrome.** 1px `--border`, hairline `--radius`. One framed window
+  with a title bar; section headers are labelled rules, not cards.
+- **Glyphs, not emoji.** Box‑drawing/terminal marks via pseudo‑elements:
+  `›▋` prompt, `▮` header, `▸` bullet, `●` status.
+- **Segmented‑LED meters**, not smooth fills.
+- **Sparse motion** — a cursor blink, a `LIVE` pulse — all behind
+  `prefers-reduced-motion`.
+- **Scope.** `assets/index.html` + `assets/style.css` only, `@embedFile`'d,
+  prettier‑clean. Restyle via CSS; never rename the server's morph hooks.
+  Extend this language, don't add a second.
+
 ## Scope
 
 Anything not in `PLAN.md` is out of scope. New features land in `PLAN.md` first, then in code. Push back on scope creep before writing any of it.

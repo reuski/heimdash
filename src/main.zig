@@ -20,6 +20,7 @@ const Config = struct {
 };
 
 const DiskUsage = struct { total: u64, free: u64 };
+const MemInfo = struct { total: u64, available: u64 };
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -86,7 +87,7 @@ fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, stream: n
 fn route(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config) !void {
     const target = req.head.target;
     if (std.mem.eql(u8, target, "/")) return servePage(req, arena, io, cfg);
-    if (std.mem.eql(u8, target, "/poll")) return servePoll(req, arena, cfg);
+    if (std.mem.eql(u8, target, "/poll")) return servePoll(req, arena, io, cfg);
     if (std.mem.eql(u8, target, "/style.css")) return serveAsset(req, style_css, "text/css; charset=utf-8");
     if (std.mem.eql(u8, target, "/datastar.js")) return serveAsset(req, datastar_js, "application/javascript; charset=utf-8");
     try req.respond("not found\n", .{
@@ -115,12 +116,12 @@ fn servePage(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *
     });
 }
 
-fn servePoll(req: *http.Server.Request, arena: std.mem.Allocator, cfg: *const Config) !void {
+fn servePoll(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config) !void {
     var aw: Io.Writer.Allocating = .init(arena);
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll("event: datastar-patch-elements\ndata: elements ");
-    try renderMetrics(w, cfg.mounts);
+    try renderMetrics(w, io, cfg.mounts);
     try w.writeAll("\n\n");
     try req.respond(aw.written(), .{
         .keep_alive = false,
@@ -161,7 +162,7 @@ fn renderPage(w: *Io.Writer, io: Io, cfg: *const Config) !void {
         if (startsWith(rest, "<section id=\"metrics\">")) |_| {
             const end_tag = "</section>";
             const end = std.mem.indexOfPos(u8, index_html, i, end_tag) orelse return error.InvalidIndexHtml;
-            try renderMetrics(w, cfg.mounts);
+            try renderMetrics(w, io, cfg.mounts);
             i = end + end_tag.len;
             continue;
         }
@@ -195,20 +196,40 @@ fn renderServices(w: *Io.Writer, services: []const Service) !void {
     try w.writeAll("</ul>");
 }
 
-fn renderMetrics(w: *Io.Writer, mounts: []const []const u8) !void {
-    try w.writeAll("<section id=\"metrics\"><h2>Disks</h2><ul id=\"disks\">");
+fn renderMetrics(w: *Io.Writer, io: Io, mounts: []const []const u8) !void {
+    try w.writeAll("<section id=\"metrics\"><h2>System</h2><ul id=\"system\">");
+
+    const load = readLoadAvg(io) catch 0;
+    const ncpu = std.Thread.getCpuCount() catch 1;
+    const cpu_pct: u64 = @min(100, @as(u64, @intFromFloat(load / @as(f64, @floatFromInt(ncpu)) * 100.0)));
+    var cbuf: [32]u8 = undefined;
+    try renderBarRow(w, "CPU", cpu_pct, std.fmt.bufPrint(&cbuf, "load {d:.2}", .{load}) catch "?");
+
+    const mem = readMemInfo(io) catch MemInfo{ .total = 0, .available = 0 };
+    const mem_used = if (mem.total > mem.available) mem.total - mem.available else 0;
+    const mem_pct: u64 = if (mem.total == 0) 0 else @min(100, mem_used * 100 / mem.total);
+    var mfb: [32]u8 = undefined;
+    var mdb: [48]u8 = undefined;
+    try renderBarRow(w, "Memory", mem_pct, std.fmt.bufPrint(&mdb, "{s} free", .{formatBytes(&mfb, mem.available)}) catch "?");
+
+    try w.writeAll("</ul><h2>Disks</h2><ul id=\"disks\">");
     for (mounts) |mnt| {
         const fs = readDiskFree(mnt) catch DiskUsage{ .total = 0, .free = 0 };
         const used = if (fs.total > fs.free) fs.total - fs.free else 0;
         const pct: u64 = if (fs.total == 0) 0 else @min(100, used * 100 / fs.total);
         var fbuf: [32]u8 = undefined;
-        const free_text = formatBytes(&fbuf, fs.free);
-
-        try w.writeAll("<li><span class=\"mount\">");
-        try writeEscaped(w, mnt);
-        try w.print("</span><span class=\"bar\"><span style=\"width:{d}%\"></span></span><span class=\"free\">{s} free</span></li>", .{ pct, free_text });
+        var dbuf: [48]u8 = undefined;
+        try renderBarRow(w, mnt, pct, std.fmt.bufPrint(&dbuf, "{s} free", .{formatBytes(&fbuf, fs.free)}) catch "?");
     }
     try w.writeAll("</ul></section>");
+}
+
+fn renderBarRow(w: *Io.Writer, label: []const u8, pct: u64, detail: []const u8) !void {
+    try w.writeAll("<li><span class=\"label\">");
+    try writeEscaped(w, label);
+    try w.print("</span><span class=\"bar\"><span style=\"width:{d}%\"></span></span><span class=\"free\">", .{pct});
+    try writeEscaped(w, detail);
+    try w.writeAll("</span></li>");
 }
 
 fn writeEscaped(w: *Io.Writer, s: []const u8) !void {
@@ -240,6 +261,37 @@ fn readUptime(io: Io) !u64 {
     const space = std.mem.indexOfScalar(u8, text, ' ') orelse text.len;
     const dot = std.mem.indexOfScalar(u8, text[0..space], '.') orelse space;
     return std.fmt.parseInt(u64, text[0..dot], 10) catch 0;
+}
+
+fn readLoadAvg(io: Io) !f64 {
+    var buf: [128]u8 = undefined;
+    var file = try Io.Dir.openFileAbsolute(io, "/proc/loadavg", .{});
+    defer file.close(io);
+    var fr = file.reader(io, &.{});
+    const n = try fr.interface.readSliceShort(&buf);
+    const text = buf[0..n];
+    const space = std.mem.indexOfScalar(u8, text, ' ') orelse return error.BadLoadAvg;
+    return std.fmt.parseFloat(f64, text[0..space]);
+}
+
+fn readMemInfo(io: Io) !MemInfo {
+    var buf: [4096]u8 = undefined;
+    var file = try Io.Dir.openFileAbsolute(io, "/proc/meminfo", .{});
+    defer file.close(io);
+    var fr = file.reader(io, &.{});
+    const n = try fr.interface.readSliceShort(&buf);
+    const text = buf[0..n];
+    return .{
+        .total = parseMemKb(text, "MemTotal:") * 1024,
+        .available = parseMemKb(text, "MemAvailable:") * 1024,
+    };
+}
+
+fn parseMemKb(text: []const u8, key: []const u8) u64 {
+    const idx = std.mem.indexOf(u8, text, key) orelse return 0;
+    const rest = std.mem.trimStart(u8, text[idx + key.len ..], " \t");
+    const end = std.mem.indexOfAny(u8, rest, " \t\n") orelse rest.len;
+    return std.fmt.parseInt(u64, rest[0..end], 10) catch 0;
 }
 
 fn formatUptime(buf: []u8, seconds: u64) []const u8 {
