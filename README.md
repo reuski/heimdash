@@ -2,14 +2,15 @@
 
 A single‑binary NixOS home‑server dashboard. Zig stdlib backend, [Datastar](https://data-star.dev) on the wire, configured by a JSON file the NixOS module writes.
 
-## Quick start
+## Develop
 
 ```sh
-nix develop          # zig + zls + treefmt
-zig build run        # build & run the stub
-nix run              # same, via the flake
-nix flake check      # eval + formatting
+nix develop                              # dev shell: zig, zls, treefmt
+zig build run -- --config config.json    # build & run against a local config
+nix flake check                          # build + formatting (canonical check)
 ```
+
+`config.json` mirrors the module options below — `listen`, `mounts`, `services`.
 
 ## NixOS module
 

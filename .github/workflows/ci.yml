@@ -10,16 +10,50 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  flake:
-    name: nix flake check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+permissions:
+  contents: write
+  pull-requests: write
 
-      - uses: DeterminateSystems/nix-installer-action@main
+jobs:
+  check:
+    name: format + flake check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.head_ref || github.ref }}
+
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
       - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: auto-format
+        run: nix fmt
+
+      # Same-repo PRs: push the formatting fix straight onto the branch.
+      - name: commit formatting
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git add -A
+            git commit -m "style: auto-format"
+            git push
+          fi
+
+      # Pushes to main can't commit to a protected branch: open a fix PR instead.
+      - name: open formatting PR
+        if: github.event_name == 'push'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          commit-message: "style: auto-format"
+          title: "style: auto-format"
+          body: "Automated `nix fmt` fixes."
+          branch: chore/auto-format
+          delete-branch: true
+          labels: automated
 
       - name: flake check
         run: nix flake check --print-build-logs

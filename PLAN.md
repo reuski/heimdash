@@ -52,7 +52,7 @@ service cells. Pure `index.html` + `style.css`; all morph targets unchanged.
 The service cards are dumb links. Probe each service and show
 reachable / unreachable, reusing the SSE morph — the page renders the links
 instantly, a slow poll fills status in. No new visible data is invented; this
-is the first feature that reaches *off the box*.
+is the first feature that reaches _off the box_.
 
 - **Config (additive).** Service gains an optional `check` URL:
   `{ name, url, check? }`; probe `check`, falling back to `url`. Existing
@@ -76,7 +76,7 @@ loop concurrent: spawn a detached `std.Thread` per accepted stream, keeping
 one arena per connection exactly as today (`gpa` is already thread‑safe).
 That is the minimum. Keep probes serial within the request first; parallelise
 per‑probe only if N × timeout latency actually hurts — YAGNI until measured.
-No auth needed: this is read‑only egress. Auth arrives only at *control*.
+No auth needed: this is read‑only egress. Auth arrives only at _control_.
 
 ## Endpoints (implemented)
 

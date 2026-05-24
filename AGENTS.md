@@ -36,7 +36,7 @@ nix build .#default                             # build via Nix
 nix fmt                                         # treefmt
 ```
 
-The maintainer machine has no local Nix. CI is the canonical verification — push and watch `gh run watch`.
+No local Nix here — CI is the canonical check (`gh run watch`). It runs `nix fmt` and commits the result back, so formatting fixes itself.
 
 ## Code style
 
@@ -48,7 +48,7 @@ The maintainer machine has no local Nix. CI is the canonical verification — pu
 ## Visual language
 
 A **retro mainframe CRT terminal**: the orange plasma glow of a PLATO panel
-(*The Friendly Orange Glow*), green‑phosphor VT screens, sci‑fi console
+(_The Friendly Orange Glow_), green‑phosphor VT screens, sci‑fi console
 readouts. Atmosphere never costs legibility.
 
 - **Monochrome phosphor.** One accent channel on a near‑black field; all
