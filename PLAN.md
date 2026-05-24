@@ -5,115 +5,80 @@ Datastar on the wire, configured by a JSON file the NixOS module writes.
 
 ## Status
 
-Skeleton bootstrapped. The next iteration writes the actual server.
+v1 server implemented end‑to‑end in `src/main.zig` (~270 lines). Builds
+clean on Zig 0.16 (`Debug` and `ReleaseSafe`). Smoke‑tested locally on
+darwin — every endpoint responds correctly; Linux‑only readers
+(`readUptime`, `readDiskFree`) fall back to zeros off‑target.
 
-**In place:**
+**Working:**
 
-- Repo layout per the original plan: `flake.nix`, `module.nix`, `build.zig`,
-  `build.zig.zon`, `src/main.zig` (stub), `assets/{index.html, style.css,
-  datastar.js}`.
-- Nix flake with `zig‑overlay` (master channel), ZLS, `treefmt`, dev shell,
-  and a hardened systemd service in `module.nix`.
-- NixOS module options matching the config schema below
-  (`listen`, `mounts`, `services`); module renders the JSON config.
-- `assets/index.html` carries the stable IDs (`#hostline`, `#uptime`,
-  `#disks`, `#services`, `#metrics`) and the
-  `data-on-interval__duration.30s.leading="@get('/poll')"` poll trigger.
-- `assets/datastar.js` is vendored (v1.0.1). Served at `/datastar.js`,
-  never from a CDN.
-- GitHub Actions runs `nix flake check` and `nix build .#default` on push.
+- `--config <path>` parses with `std.json.parseFromSliceLeaky` into the
+  `Config` struct.
+- `std.Io.net.IpAddress.parseLiteral` + `listen` + `accept` loop, one
+  arena per connection, `connection: close` lifecycle.
+- `GET /` renders the embedded `index.html`, substituting `<h1>`,
+  `<span id="uptime">`, the full `<section id="metrics">`, and the
+  services `<ul>` via a single landmark walk. First paint uses the same
+  `renderMetrics` the SSE handler emits.
+- `GET /poll` emits one `event: datastar-patch-elements` /
+  `data: elements <section id="metrics">…</section>` and closes.
+- `GET /style.css` and `GET /datastar.js` serve `@embedFile`'d bytes
+  with `cache-control: public, max-age=31536000, immutable`.
+- Metric readers: `readHostname` (`/etc/hostname`), `readUptime`
+  (`/proc/uptime`), `readDiskFree` (Linux `statfs` syscall via
+  `std.os.linux.syscall2`, stub‑zero on non‑Linux).
 
-**Not yet in place — this is the next session's work:**
+**Build note:** `@embedFile` in 0.16 rejects paths outside the module's
+package dir, so `build.zig` registers each asset via
+`exe_mod.addAnonymousImport("name", …)`. `src/main.zig` imports them as
+`@embedFile("index.html")` etc.
 
-- A real HTTP server in `src/main.zig`. Today it prints a stub line.
+## Next: prove it on a Linux host
 
-## Next: implement the v1 server
+The whole point of v1 is to actually run on the target. None of that
+has happened yet.
 
-The whole job fits in `src/main.zig`. Split out `metrics.zig` only if it
-exceeds ~50 lines.
+1. **CI green.** Push and `gh run watch`. `nix flake check` and
+   `nix build .#default` must pass on a Linux runner — the maintainer
+   machine has no local Nix, so CI is the canonical Linux build.
+2. **Smoke test on Linux.** `nix run` (or the built binary) on a real
+   NixOS box. Confirm hostname + uptime populate, disk bars reflect
+   real `statfs` output, the 30 s `data-on-interval` polls land, and
+   Datastar morphs the metrics section without flicker.
+3. **NixOS module dry‑run.** Build the module against a test config in
+   a VM or nixos‑rebuild dry‑activate. Verify the hardened systemd unit
+   starts, binds to `127.0.0.1:8080`, and survives a restart.
 
-### Use case
+If any of those surface bugs, fix in `src/main.zig` and re‑verify. Do
+not start v2 work before all three pass.
 
-The first useful render shows:
+## Endpoints (implemented)
 
-- **Hostname + uptime** — read `/etc/hostname` and `/proc/uptime`.
-- **Disk free per mount** — for each entry in `config.mounts`, call
-  `statvfs` and render a bar.
-- **Service grid** — render `<a>` tags from `config.services`.
+| Method | Path           | Returns                                                     |
+| ------ | -------------- | ----------------------------------------------------------- |
+| GET    | `/`            | Full HTML page, `text/html`. Substitutes services + metrics |
+| GET    | `/poll`        | One `datastar-patch-elements` event, `text/event-stream`    |
+| GET    | `/style.css`   | `@embedFile` asset, long cache                              |
+| GET    | `/datastar.js` | `@embedFile` asset, long cache                              |
 
-CPU and RAM gauges are still deferred; the goal is the smallest thing that
-earns its pixels.
-
-### Wire format
-
-Every dynamic response is `text/event-stream` with a single
-`datastar-patch-elements` event, then close. No long‑lived connections in
-v1. One SSE helper (~15 lines) handles the framing:
-
-```
-event: datastar-patch-elements
-data: elements <section id="metrics">…</section>
-
-```
-
-Stable IDs already exist in `index.html`; the `/poll` handler returns the
-full `<section id="metrics">…</section>` and Datastar morphs it in.
-
-### Endpoints
-
-| Method | Path           | Returns                                                         |
-| ------ | -------------- | --------------------------------------------------------------- |
-| GET    | `/`            | Full HTML page, `text/html`. Substitutes services into the grid |
-| GET    | `/poll`        | One `datastar-patch-elements` event, `text/event-stream`         |
-| GET    | `/style.css`   | `@embedFile` asset, long cache                                  |
-| GET    | `/datastar.js` | `@embedFile` asset, long cache                                  |
-
-### Implementation order
-
-Aim for one feature working end‑to‑end before adding the next.
-
-1. **Config parse.** Accept `--config <path>`, read the file, parse with
-   `std.json.parseFromSlice` into a `Config` struct
-   (`listen: []const u8`, `mounts: [][]const u8`,
-   `services: []struct { name, url }`).
-2. **HTTP server.** Use `std.http.Server` if present in the resolved Zig
-   version; otherwise hand‑roll a minimal HTTP/1.1 handler on `std.net`
-   (~100 lines: parse request line + headers, route by path, write
-   response). One arena per request, `defer arena.deinit()`.
-3. **Static endpoints.** Wire `/style.css` and `/datastar.js` to
-   `@embedFile("../assets/...")`. `Cache-Control: public, max-age=31536000,
-   immutable`. Verify in a browser.
-4. **Page render `/`.** Read the embedded `index.html`, substitute the
-   `<ul id="services">` body with rendered link cards from
-   `config.services`. Initial `<section id="metrics">` can render with
-   the same code path the SSE helper uses, so the first paint matches
-   subsequent polls.
-5. **Metrics readers.**
-   - `readUptime()` → parses `/proc/uptime`, returns seconds.
-   - `readHostname()` → trims `/etc/hostname`.
-   - `readDiskFree(mount)` → wraps `std.posix.statvfs` and returns
-     `{ total, free }`.
-6. **`/poll` handler.** Build the `<section id="metrics">` HTML
-   (uptime + a `<li>` per mount with its bar and free bytes), emit one
-   SSE event via the helper, close.
-7. **Smoke test on the target host.** `nix run` on a Linux box; confirm
-   the page loads, the services grid is populated, and metrics update on
-   the 30 s interval.
+Any other path returns `404 text/plain`.
 
 ## Hard rules (do not negotiate in v1)
 
 - **Zig stdlib only.** `build.zig.zon` `.dependencies` stays empty.
 - **All assets embedded** via `@embedFile`. No runtime asset paths.
-- **JSON config is the contract** between Nix and Zig — additive changes
-  only.
-- **Stable IDs already in `index.html`** — never rename without updating
-  the morph targets in `/poll`.
-- **One arena per request**, `defer arena.deinit()`. No allocator strategy
-  decisions.
-- **SSE wire format, pull‑mode lifecycle.** Same wire format will extend
-  to long‑lived push in v2 without a client rewrite.
+- **JSON config is the contract** between Nix and Zig — additive
+  changes only.
+- **Stable IDs in `index.html`** — never rename without updating the
+  morph targets `/poll` emits.
+- **One arena per request**, `defer arena.deinit()`. No allocator
+  strategy decisions.
+- **SSE wire format, pull‑mode lifecycle.** Same wire format will
+  extend to long‑lived push in v2 without a client rewrite.
+- **`metrics.zig` only if `main.zig` hurts to read.** Today it doesn't;
+  the metric readers total ~30 lines.
 
-## Config schema (in module.nix and parsed by the binary)
+## Config schema (in `module.nix`, parsed by the binary)
 
 ```json
 {
@@ -126,8 +91,8 @@ Aim for one feature working end‑to‑end before adding the next.
 }
 ```
 
-No `controlPath`, no `healthcheck`, no `icon` yet. Add fields only when
-something consumes them.
+No `controlPath`, no `healthcheck`, no `icon` yet. Add fields only
+when something consumes them.
 
 ## What stays deferred
 
@@ -141,15 +106,15 @@ belongs in the v1 server.
 
 Each future addition is intended to be small, local, and reversible:
 
-- New disk‑adjacent metric (e.g. SMART) → add a reader + lines in the
-  `#metrics` render. One file.
+- New disk‑adjacent metric (e.g. SMART) → add a reader + lines in
+  `renderMetrics`. One function.
 - New service link → one entry in the Nix module config. Zero Zig
   touched.
 - Faster updates for part of the page → split `/poll` into `/poll/fast`
-  and `/poll/slow` with different `data-on-interval` durations. Same SSE
-  helper.
+  and `/poll/slow` with different `data-on-interval` durations. Same
+  SSE helper.
 - Live log tail → keep the SSE connection open and yield more events.
   Wire format and client unchanged.
 - Service control → new POST endpoint returning a
-  `datastar-patch-elements` event for the updated status indicator. Auth
-  becomes necessary at this step — and only at this step.
+  `datastar-patch-elements` event for the updated status indicator.
+  Auth becomes necessary at this step — and only at this step.

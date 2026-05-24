@@ -10,6 +10,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    inline for (.{ "index.html", "style.css", "datastar.js" }) |name| {
+        exe_mod.addAnonymousImport(name, .{
+            .root_source_file = b.path("assets/" ++ name),
+        });
+    }
+
     const exe = b.addExecutable(.{
         .name = "heimdash",
         .root_module = exe_mod,

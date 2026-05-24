@@ -1,10 +1,298 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const Io = std.Io;
+const net = std.Io.net;
+const http = std.http;
 
-pub fn main() void {
-    var args = std.process.args();
-    _ = args.skip();
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--config")) _ = args.next();
+const index_html = @embedFile("index.html");
+const style_css = @embedFile("style.css");
+const datastar_js = @embedFile("datastar.js");
+
+const Service = struct {
+    name: []const u8,
+    url: []const u8,
+};
+
+const Config = struct {
+    listen: []const u8,
+    mounts: []const []const u8,
+    services: []const Service,
+};
+
+const DiskUsage = struct { total: u64, free: u64 };
+
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const arena = init.arena.allocator();
+    const io = init.io;
+
+    const args = try init.minimal.args.toSlice(arena);
+    const config_path = parseConfigArg(args) orelse
+        std.process.fatal("usage: heimdash --config <path.json>", .{});
+
+    const config_bytes = Io.Dir.cwd().readFileAlloc(io, config_path, arena, .limited(1 << 20)) catch |err|
+        std.process.fatal("failed to read {s}: {t}", .{ config_path, err });
+
+    const cfg = std.json.parseFromSliceLeaky(Config, arena, config_bytes, .{ .ignore_unknown_fields = true }) catch |err|
+        std.process.fatal("invalid config {s}: {t}", .{ config_path, err });
+
+    const listen_addr = net.IpAddress.parseLiteral(cfg.listen) catch |err|
+        std.process.fatal("invalid listen {s}: {t}", .{ cfg.listen, err });
+
+    var server = listen_addr.listen(io, .{ .reuse_address = true }) catch |err|
+        std.process.fatal("failed to bind {f}: {t}", .{ listen_addr, err });
+    defer server.deinit(io);
+
+    std.log.info("heimdash listening on http://{f}", .{listen_addr});
+
+    while (true) {
+        const stream = server.accept(io) catch |err| {
+            std.log.err("accept failed: {t}", .{err});
+            continue;
+        };
+        serveConnection(io, gpa, &cfg, stream) catch |err|
+            std.log.err("connection error: {t}", .{err});
     }
-    std.debug.print("heimdash: not yet implemented\n", .{});
 }
+
+fn parseConfigArg(args: []const [:0]const u8) ?[]const u8 {
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--config") and i + 1 < args.len) return args[i + 1];
+    }
+    return null;
+}
+
+fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, stream: net.Stream) !void {
+    defer {
+        var s = stream;
+        s.close(io);
+    }
+
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var recv_buf: [4096]u8 = undefined;
+    var send_buf: [16 * 1024]u8 = undefined;
+    var stream_reader = stream.reader(io, &recv_buf);
+    var stream_writer = stream.writer(io, &send_buf);
+    var conn: http.Server = .init(&stream_reader.interface, &stream_writer.interface);
+
+    var request = conn.receiveHead() catch return;
+    try route(&request, arena, io, cfg);
+}
+
+fn route(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config) !void {
+    const target = req.head.target;
+    if (std.mem.eql(u8, target, "/")) return servePage(req, arena, io, cfg);
+    if (std.mem.eql(u8, target, "/poll")) return servePoll(req, arena, cfg);
+    if (std.mem.eql(u8, target, "/style.css")) return serveAsset(req, style_css, "text/css; charset=utf-8");
+    if (std.mem.eql(u8, target, "/datastar.js")) return serveAsset(req, datastar_js, "application/javascript; charset=utf-8");
+    try req.respond("not found\n", .{
+        .status = .not_found,
+        .keep_alive = false,
+        .extra_headers = &.{.{ .name = "content-type", .value = "text/plain; charset=utf-8" }},
+    });
+}
+
+const asset_cache: http.Header = .{ .name = "cache-control", .value = "public, max-age=31536000, immutable" };
+
+fn serveAsset(req: *http.Server.Request, body: []const u8, ctype: []const u8) !void {
+    try req.respond(body, .{
+        .keep_alive = false,
+        .extra_headers = &.{ .{ .name = "content-type", .value = ctype }, asset_cache },
+    });
+}
+
+fn servePage(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config) !void {
+    var aw: Io.Writer.Allocating = .init(arena);
+    defer aw.deinit();
+    try renderPage(&aw.writer, io, cfg);
+    try req.respond(aw.written(), .{
+        .keep_alive = false,
+        .extra_headers = &.{.{ .name = "content-type", .value = "text/html; charset=utf-8" }},
+    });
+}
+
+fn servePoll(req: *http.Server.Request, arena: std.mem.Allocator, cfg: *const Config) !void {
+    var aw: Io.Writer.Allocating = .init(arena);
+    defer aw.deinit();
+    const w = &aw.writer;
+    try w.writeAll("event: datastar-patch-elements\ndata: elements ");
+    try renderMetrics(w, cfg.mounts);
+    try w.writeAll("\n\n");
+    try req.respond(aw.written(), .{
+        .keep_alive = false,
+        .extra_headers = &.{
+            .{ .name = "content-type", .value = "text/event-stream" },
+            .{ .name = "cache-control", .value = "no-store" },
+        },
+    });
+}
+
+fn renderPage(w: *Io.Writer, io: Io, cfg: *const Config) !void {
+    var hostname_buf: [256]u8 = undefined;
+    const hostname = readHostname(io, &hostname_buf) catch "unknown";
+
+    var uptime_buf: [64]u8 = undefined;
+    const uptime_text = formatUptime(&uptime_buf, readUptime(io) catch 0);
+
+    var i: usize = 0;
+    while (i < index_html.len) {
+        const rest = index_html[i..];
+
+        if (startsWith(rest, "<h1>heimdash</h1>")) |n| {
+            try w.writeAll("<h1>");
+            try writeEscaped(w, hostname);
+            try w.writeAll("</h1>");
+            i += n;
+            continue;
+        }
+
+        if (startsWith(rest, "<span id=\"uptime\"></span>")) |n| {
+            try w.writeAll("<span id=\"uptime\">");
+            try writeEscaped(w, uptime_text);
+            try w.writeAll("</span>");
+            i += n;
+            continue;
+        }
+
+        if (startsWith(rest, "<section id=\"metrics\">")) |_| {
+            const end_tag = "</section>";
+            const end = std.mem.indexOfPos(u8, index_html, i, end_tag) orelse return error.InvalidIndexHtml;
+            try renderMetrics(w, cfg.mounts);
+            i = end + end_tag.len;
+            continue;
+        }
+
+        if (startsWith(rest, "<ul id=\"services\"></ul>")) |n| {
+            try renderServices(w, cfg.services);
+            i += n;
+            continue;
+        }
+
+        try w.writeByte(index_html[i]);
+        i += 1;
+    }
+}
+
+fn startsWith(haystack: []const u8, needle: []const u8) ?usize {
+    if (haystack.len < needle.len) return null;
+    if (!std.mem.eql(u8, haystack[0..needle.len], needle)) return null;
+    return needle.len;
+}
+
+fn renderServices(w: *Io.Writer, services: []const Service) !void {
+    try w.writeAll("<ul id=\"services\">");
+    for (services) |svc| {
+        try w.writeAll("<li><a href=\"");
+        try writeEscaped(w, svc.url);
+        try w.writeAll("\">");
+        try writeEscaped(w, svc.name);
+        try w.writeAll("</a></li>");
+    }
+    try w.writeAll("</ul>");
+}
+
+fn renderMetrics(w: *Io.Writer, mounts: []const []const u8) !void {
+    try w.writeAll("<section id=\"metrics\"><h2>Disks</h2><ul id=\"disks\">");
+    for (mounts) |mnt| {
+        const fs = readDiskFree(mnt) catch DiskUsage{ .total = 0, .free = 0 };
+        const used = if (fs.total > fs.free) fs.total - fs.free else 0;
+        const pct: u64 = if (fs.total == 0) 0 else @min(100, used * 100 / fs.total);
+        var fbuf: [32]u8 = undefined;
+        const free_text = formatBytes(&fbuf, fs.free);
+
+        try w.writeAll("<li><span class=\"mount\">");
+        try writeEscaped(w, mnt);
+        try w.print("</span><span class=\"bar\"><span style=\"width:{d}%\"></span></span><span class=\"free\">{s} free</span></li>", .{ pct, free_text });
+    }
+    try w.writeAll("</ul></section>");
+}
+
+fn writeEscaped(w: *Io.Writer, s: []const u8) !void {
+    for (s) |c| switch (c) {
+        '&' => try w.writeAll("&amp;"),
+        '<' => try w.writeAll("&lt;"),
+        '>' => try w.writeAll("&gt;"),
+        '"' => try w.writeAll("&quot;"),
+        '\'' => try w.writeAll("&#39;"),
+        else => try w.writeByte(c),
+    };
+}
+
+fn readHostname(io: Io, buf: []u8) ![]const u8 {
+    var file = try Io.Dir.openFileAbsolute(io, "/etc/hostname", .{});
+    defer file.close(io);
+    var fr = file.reader(io, &.{});
+    const n = try fr.interface.readSliceShort(buf);
+    return std.mem.trim(u8, buf[0..n], " \t\r\n");
+}
+
+fn readUptime(io: Io) !u64 {
+    var buf: [128]u8 = undefined;
+    var file = try Io.Dir.openFileAbsolute(io, "/proc/uptime", .{});
+    defer file.close(io);
+    var fr = file.reader(io, &.{});
+    const n = try fr.interface.readSliceShort(&buf);
+    const text = buf[0..n];
+    const space = std.mem.indexOfScalar(u8, text, ' ') orelse text.len;
+    const dot = std.mem.indexOfScalar(u8, text[0..space], '.') orelse space;
+    return std.fmt.parseInt(u64, text[0..dot], 10) catch 0;
+}
+
+fn formatUptime(buf: []u8, seconds: u64) []const u8 {
+    if (seconds == 0) return std.fmt.bufPrint(buf, "uptime unknown", .{}) catch "uptime unknown";
+    const days = seconds / 86_400;
+    const hours = (seconds % 86_400) / 3_600;
+    const mins = (seconds % 3_600) / 60;
+    return std.fmt.bufPrint(buf, "up {d}d {d}h {d}m", .{ days, hours, mins }) catch "up";
+}
+
+fn formatBytes(buf: []u8, bytes: u64) []const u8 {
+    const units = [_][]const u8{ "B", "KiB", "MiB", "GiB", "TiB", "PiB" };
+    var value: f64 = @floatFromInt(bytes);
+    var unit: usize = 0;
+    while (value >= 1024.0 and unit + 1 < units.len) : (unit += 1) value /= 1024.0;
+    const result = if (unit == 0)
+        std.fmt.bufPrint(buf, "{d:.0} {s}", .{ value, units[unit] })
+    else
+        std.fmt.bufPrint(buf, "{d:.1} {s}", .{ value, units[unit] });
+    return result catch "?";
+}
+
+fn readDiskFree(path: []const u8) !DiskUsage {
+    if (builtin.os.tag != .linux) return .{ .total = 0, .free = 0 };
+
+    const linux = std.os.linux;
+    var path_buf: [std.posix.PATH_MAX]u8 = undefined;
+    if (path.len >= path_buf.len) return error.NameTooLong;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+
+    var st: StatFs = undefined;
+    const rc = linux.syscall2(.statfs, @intFromPtr(&path_buf), @intFromPtr(&st));
+    switch (linux.errno(rc)) {
+        .SUCCESS => {},
+        else => return error.StatFsFailed,
+    }
+    const bs: u64 = @intCast(st.f_bsize);
+    return .{ .total = st.f_blocks *% bs, .free = st.f_bavail *% bs };
+}
+
+// Linux statfs (64-bit). Stable layout on x86_64/aarch64/riscv64.
+const StatFs = extern struct {
+    f_type: i64,
+    f_bsize: i64,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [2]i32,
+    f_namelen: i64,
+    f_frsize: i64,
+    f_flags: i64,
+    f_spare: [4]i64,
+};

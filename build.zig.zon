@@ -1,7 +1,7 @@
 .{
     .name = .heimdash,
     .version = "0.0.0",
-    .fingerprint = 0xdeadbeef4bd1e857,
+    .fingerprint = 0x4bd1e8571859d72f,
     .minimum_zig_version = "0.15.0",
     .paths = .{
         "build.zig",

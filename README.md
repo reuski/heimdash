@@ -2,8 +2,6 @@
 
 A single‑binary NixOS home‑server dashboard. Zig stdlib backend, [Datastar](https://data-star.dev) on the wire, configured by a JSON file the NixOS module writes.
 
-Status: **v1 in progress.** See [`PLAN.md`](./PLAN.md) for scope and rationale.
-
 ## Quick start
 
 ```sh
