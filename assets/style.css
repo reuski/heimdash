@@ -9,11 +9,14 @@
   --ok: #4ade80;
   --border: #2a2017;
   --track-bg: #1b150e;
-  --glow: rgba(255, 158, 87, 0.22);
-  --ok-glow: rgba(74, 222, 128, 0.3);
-  --scanline: rgba(0, 0, 0, 0.22);
-  --sweep: rgba(255, 158, 87, 0.05);
-  --vignette: rgba(0, 0, 0, 0.62);
+  --glow: rgba(255, 158, 87, 0.2);
+  --ok-glow: rgba(74, 222, 128, 0.28);
+  --scanline: rgba(0, 0, 0, 0.16);
+  --grille: rgba(0, 0, 0, 0.08);
+  --sweep: rgba(255, 158, 87, 0.04);
+  --vignette: rgba(0, 0, 0, 0.5);
+  --aberr-r: rgba(255, 60, 90, 0.35);
+  --aberr-c: rgba(60, 170, 255, 0.3);
 
   --space-2xs: 0.25rem;
   --space-xs: 0.5rem;
@@ -24,18 +27,17 @@
 
   --text-xs: 0.75rem;
   --text-sm: 0.8125rem;
-  --text-xl: 1.375rem;
+  --text-xl: 1.5rem;
 
   --track-tight: 0.02em;
   --track-wide: 0.08em;
-  --track-caps: 0.25em;
-  --track-widest: 0.3em;
+  --track-caps: 0.28em;
+  --track-widest: 0.32em;
 
-  --content-max: 56rem;
-  --bar-h: 0.625rem;
+  --bar-h: 0.75rem;
   --dot: 0.5em;
-  --seg: 0.5rem;
-  --seg-gap: 0.125rem;
+  --seg: 6px;
+  --seg-gap: 2px;
 
   font-family:
     ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas,
@@ -47,13 +49,13 @@
   box-sizing: border-box;
 }
 
+html,
 body {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
+  height: 100%;
+}
+
+body {
   margin: 0;
-  padding: var(--space-xl);
   background: var(--bg);
   color: var(--fg);
   line-height: 1.5;
@@ -71,11 +73,13 @@ body::before {
   inset: 0;
   z-index: 9999;
   pointer-events: none;
-  background: repeating-linear-gradient(
-    0deg,
-    var(--scanline) 0 1px,
-    transparent 1px 3px
-  );
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      var(--scanline) 0 1px,
+      transparent 1px 3px
+    ),
+    repeating-linear-gradient(90deg, var(--grille) 0 1px, transparent 1px 3px);
 }
 
 body::after {
@@ -90,28 +94,25 @@ body::after {
     var(--sweep) 50%,
     transparent 100%
   );
-  background-size: 100% 45vh;
+  background-size: 100% 40vh;
   background-repeat: no-repeat;
-  animation: sweep 7s linear infinite;
+  animation: sweep 9s linear infinite;
 }
 
 main {
   position: relative;
-  width: 100%;
-  max-width: var(--content-max);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
   background: var(--panel);
-  border: 1px solid var(--border);
-  box-shadow:
-    0 0 28px var(--glow),
-    inset 0 0 90px var(--vignette);
-  animation: flicker 5.5s steps(1, end) infinite;
+  box-shadow: inset 0 0 260px 30px var(--vignette);
 }
 
 .titlebar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-xs) var(--space-md);
+  padding: var(--space-xs) var(--space-lg);
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   font-size: var(--text-xs);
@@ -123,7 +124,10 @@ main {
 .brand {
   color: var(--accent);
   font-weight: 700;
-  text-shadow: 0 0 8px var(--glow);
+  text-shadow:
+    -0.4px 0 var(--aberr-r),
+    0.4px 0 var(--aberr-c),
+    0 0 8px var(--glow);
 }
 
 .live {
@@ -137,14 +141,15 @@ main {
   width: var(--dot);
   height: var(--dot);
   background: var(--ok);
-  box-shadow: 0 0 6px var(--ok-glow);
-  animation: blink 1.4s steps(1, end) infinite;
+  box-shadow: 0 0 8px var(--ok-glow);
 }
 
 .screen {
+  flex: 1;
   display: grid;
-  gap: var(--space-lg);
-  padding: var(--space-lg);
+  align-content: start;
+  gap: var(--space-xl);
+  padding: var(--space-xl) var(--space-lg);
 }
 
 #hostline {
@@ -153,7 +158,7 @@ main {
   justify-content: space-between;
   gap: var(--space-md);
   padding-bottom: var(--space-md);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px dashed var(--border);
 }
 
 #hostline h1 {
@@ -161,14 +166,16 @@ main {
   font-size: var(--text-xl);
   font-weight: 700;
   letter-spacing: var(--track-tight);
-  text-shadow: 0 0 10px var(--glow);
+  text-shadow:
+    -0.6px 0 var(--aberr-r),
+    0.6px 0 var(--aberr-c),
+    0 0 10px var(--glow);
 }
 
 #hostline h1::after {
   content: "▋";
   margin-left: 0.1em;
   color: var(--accent);
-  animation: blink 1.1s steps(1, end) infinite;
 }
 
 #uptime {
@@ -202,11 +209,16 @@ h2::before {
 h2::after {
   content: "";
   flex: 1;
-  border-top: 1px solid var(--border);
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--border) 0 4px,
+    transparent 4px 8px
+  );
 }
 
 #metrics > h2:not(:first-child) {
-  margin-top: var(--space-lg);
+  margin-top: var(--space-xl);
 }
 
 ul {
@@ -217,7 +229,7 @@ ul {
 
 #metrics li {
   display: grid;
-  grid-template-columns: minmax(7rem, 1fr) 2.5fr minmax(6rem, auto);
+  grid-template-columns: minmax(7rem, 1fr) 4fr minmax(6rem, auto);
   gap: var(--space-md);
   align-items: center;
   padding: var(--space-2xs) 0;
@@ -244,7 +256,7 @@ ul {
   display: block;
   height: 100%;
   background: var(--accent);
-  box-shadow: 0 0 6px var(--glow);
+  box-shadow: 0 0 5px var(--glow);
 }
 
 #metrics .bar::after {
@@ -262,7 +274,7 @@ ul {
 #metrics .free {
   text-align: right;
   color: var(--ok);
-  text-shadow: 0 0 6px var(--ok-glow);
+  text-shadow: 0 0 8px var(--ok-glow);
   font-variant-numeric: tabular-nums;
   font-size: var(--text-sm);
   letter-spacing: var(--track-tight);
@@ -270,7 +282,7 @@ ul {
 
 #services {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
   gap: var(--space-sm);
 }
 
@@ -286,6 +298,7 @@ ul {
   font-size: var(--text-sm);
   transition:
     background 0.15s ease,
+    color 0.15s ease,
     border-color 0.15s ease,
     box-shadow 0.15s ease;
 }
@@ -295,55 +308,23 @@ ul {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--bg);
-  box-shadow: 0 0 12px var(--glow);
+  box-shadow: 0 0 16px var(--glow);
   outline: none;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
 }
 
 @keyframes sweep {
   from {
-    background-position: 0 -45vh;
+    background-position: 0 -40vh;
   }
   to {
-    background-position: 0 145vh;
-  }
-}
-
-@keyframes flicker {
-  0%,
-  96%,
-  100% {
-    opacity: 1;
-  }
-  97% {
-    opacity: 0.88;
-  }
-  98% {
-    opacity: 0.97;
-  }
-  99% {
-    opacity: 0.91;
+    background-position: 0 140vh;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .live .dot,
-  #hostline h1::after {
-    animation: none;
-  }
-
   body::after {
     animation: none;
     background: none;
-  }
-
-  main {
-    animation: none;
   }
 
   #services a {
