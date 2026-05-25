@@ -74,11 +74,7 @@ body::before {
   z-index: 9999;
   pointer-events: none;
   background-image:
-    repeating-linear-gradient(
-      0deg,
-      var(--scanline) 0 1px,
-      transparent 1px 3px
-    ),
+    repeating-linear-gradient(0deg, var(--scanline) 0 1px, transparent 1px 3px),
     repeating-linear-gradient(90deg, var(--grille) 0 1px, transparent 1px 3px);
 }
 
