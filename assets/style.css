@@ -1,5 +1,5 @@
 :root {
-  color-scheme: dark light;
+  color-scheme: dark;
 
   --bg: #0c0a07;
   --panel: #14100b;
@@ -9,9 +9,11 @@
   --ok: #4ade80;
   --border: #2a2017;
   --track-bg: #1b150e;
-  --glow: rgba(255, 158, 87, 0.3);
-  --ok-glow: rgba(74, 222, 128, 0.35);
-  --scanline: rgba(0, 0, 0, 0.12);
+  --glow: rgba(255, 158, 87, 0.22);
+  --ok-glow: rgba(74, 222, 128, 0.3);
+  --scanline: rgba(0, 0, 0, 0.22);
+  --sweep: rgba(255, 158, 87, 0.05);
+  --vignette: rgba(0, 0, 0, 0.62);
 
   --space-2xs: 0.25rem;
   --space-xs: 0.5rem;
@@ -30,30 +32,15 @@
   --track-widest: 0.3em;
 
   --content-max: 56rem;
-  --bar-h: 0.5rem;
+  --bar-h: 0.625rem;
   --dot: 0.5em;
-  --radius: 3px;
+  --seg: 0.5rem;
+  --seg-gap: 0.125rem;
 
   font-family:
     ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas,
     "DejaVu Sans Mono", monospace;
   font-size: 15px;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #efe6d6;
-    --panel: #f7f1e5;
-    --fg: #271c12;
-    --dim: #877158;
-    --accent: #c2691f;
-    --ok: #1f9d55;
-    --border: #ddd0b8;
-    --track-bg: #e4d9c4;
-    --glow: rgba(194, 105, 31, 0.18);
-    --ok-glow: transparent;
-    --scanline: rgba(0, 0, 0, 0.04);
-  }
 }
 
 * {
@@ -91,14 +78,33 @@ body::before {
   );
 }
 
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    var(--sweep) 50%,
+    transparent 100%
+  );
+  background-size: 100% 45vh;
+  background-repeat: no-repeat;
+  animation: sweep 7s linear infinite;
+}
+
 main {
+  position: relative;
   width: 100%;
   max-width: var(--content-max);
-  overflow: hidden;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 0 60px var(--glow);
+  box-shadow:
+    0 0 28px var(--glow),
+    inset 0 0 90px var(--vignette);
+  animation: flicker 5.5s steps(1, end) infinite;
 }
 
 .titlebar {
@@ -117,7 +123,7 @@ main {
 .brand {
   color: var(--accent);
   font-weight: 700;
-  text-shadow: 0 0 12px var(--glow);
+  text-shadow: 0 0 8px var(--glow);
 }
 
 .live {
@@ -130,9 +136,8 @@ main {
 .live .dot {
   width: var(--dot);
   height: var(--dot);
-  border-radius: 50%;
   background: var(--ok);
-  box-shadow: 0 0 8px var(--ok-glow);
+  box-shadow: 0 0 6px var(--ok-glow);
   animation: blink 1.4s steps(1, end) infinite;
 }
 
@@ -156,12 +161,7 @@ main {
   font-size: var(--text-xl);
   font-weight: 700;
   letter-spacing: var(--track-tight);
-  text-shadow: 0 0 14px var(--glow);
-}
-
-#hostline h1::before {
-  content: "› ";
-  color: var(--accent);
+  text-shadow: 0 0 10px var(--glow);
 }
 
 #hostline h1::after {
@@ -181,7 +181,7 @@ main {
 h2 {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   margin: 0 0 var(--space-md);
   font-size: var(--text-xs);
   font-weight: 700;
@@ -191,8 +191,12 @@ h2 {
 }
 
 h2::before {
-  content: "▮";
-  color: var(--accent);
+  content: "";
+  flex: none;
+  width: var(--dot);
+  height: var(--dot);
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--glow);
 }
 
 h2::after {
@@ -234,21 +238,31 @@ ul {
   height: var(--bar-h);
   background: var(--track-bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
 }
 
 #metrics .bar > span {
   display: block;
   height: 100%;
   background: var(--accent);
-  box-shadow: 0 0 12px var(--glow);
+  box-shadow: 0 0 6px var(--glow);
+}
+
+#metrics .bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 var(--seg),
+    var(--bg) var(--seg) calc(var(--seg) + var(--seg-gap))
+  );
 }
 
 #metrics .free {
   text-align: right;
   color: var(--ok);
-  text-shadow: 0 0 8px var(--ok-glow);
+  text-shadow: 0 0 6px var(--ok-glow);
   font-variant-numeric: tabular-nums;
   font-size: var(--text-sm);
   letter-spacing: var(--track-tight);
@@ -265,7 +279,6 @@ ul {
   padding: var(--space-sm) var(--space-md);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
   color: var(--fg);
   text-decoration: none;
   text-transform: uppercase;
@@ -277,23 +290,13 @@ ul {
     box-shadow 0.15s ease;
 }
 
-#services a::before {
-  content: "▸ ";
-  color: var(--accent);
-}
-
 #services a:hover,
 #services a:focus-visible {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--bg);
-  box-shadow: 0 0 16px var(--glow);
+  box-shadow: 0 0 12px var(--glow);
   outline: none;
-}
-
-#services a:hover::before,
-#services a:focus-visible::before {
-  color: var(--bg);
 }
 
 @keyframes blink {
@@ -302,9 +305,44 @@ ul {
   }
 }
 
+@keyframes sweep {
+  from {
+    background-position: 0 -45vh;
+  }
+  to {
+    background-position: 0 145vh;
+  }
+}
+
+@keyframes flicker {
+  0%,
+  96%,
+  100% {
+    opacity: 1;
+  }
+  97% {
+    opacity: 0.88;
+  }
+  98% {
+    opacity: 0.97;
+  }
+  99% {
+    opacity: 0.91;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .live .dot,
   #hostline h1::after {
+    animation: none;
+  }
+
+  body::after {
+    animation: none;
+    background: none;
+  }
+
+  main {
     animation: none;
   }
 
