@@ -31,7 +31,6 @@ jobs:
       - name: auto-format
         run: nix fmt
 
-      # Same-repo PRs: push the formatting fix straight onto the branch.
       - name: commit formatting
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         run: |
@@ -43,8 +42,8 @@ jobs:
             git push
           fi
 
-      # Pushes to main can't commit to a protected branch: open a fix PR instead.
       - name: open formatting PR
+        id: auto-format-pr
         if: github.event_name == 'push'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
@@ -54,6 +53,12 @@ jobs:
           branch: chore/auto-format
           delete-branch: true
           labels: automated
+
+      - name: enable auto-merge
+        if: github.event_name == 'push' && steps.auto-format-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --squash --auto "${{ steps.auto-format-pr.outputs.pull-request-number }}"
 
       - name: flake check
         run: nix flake check --print-build-logs
