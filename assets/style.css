@@ -352,7 +352,6 @@ ul {
 #metrics li {
   --metric-state-color: var(--status-unknown);
   --metric-state-glow: var(--glow-unknown);
-  --metric-state-glyph: "??";
 
   display: grid;
   grid-template-columns: minmax(7rem, 11rem) minmax(9rem, 1fr) minmax(
@@ -369,25 +368,21 @@ ul {
 #metrics li.is-ok {
   --metric-state-color: var(--status-ok);
   --metric-state-glow: var(--glow-ok);
-  --metric-state-glyph: "OK";
 }
 
 #metrics li.is-warn {
   --metric-state-color: var(--status-warn);
   --metric-state-glow: var(--glow-warn);
-  --metric-state-glyph: "!!";
 }
 
 #metrics li.is-critical {
   --metric-state-color: var(--status-critical);
   --metric-state-glow: var(--glow-critical);
-  --metric-state-glyph: "XX";
 }
 
 #metrics li.is-unknown {
   --metric-state-color: var(--status-unknown);
   --metric-state-glow: var(--glow-unknown);
-  --metric-state-glyph: "??";
 }
 
 #metrics .label {
@@ -398,13 +393,6 @@ ul {
   text-overflow: ellipsis;
   text-transform: uppercase;
   white-space: nowrap;
-}
-
-#metrics .label::before {
-  content: "[" var(--metric-state-glyph) "] ";
-  color: var(--metric-state-color);
-  font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 6px var(--metric-state-glow);
 }
 
 #metrics .bar {
@@ -469,7 +457,6 @@ ul {
 #services li {
   --service-state-color: var(--state-checking);
   --service-state-glow: var(--glow-unknown);
-  --service-state-glyph: "..";
 
   min-width: 0;
   min-height: 0;
@@ -478,13 +465,11 @@ ul {
 #services li.is-up {
   --service-state-color: var(--state-up);
   --service-state-glow: var(--glow-ok);
-  --service-state-glyph: "UP";
 }
 
 #services li.is-down {
   --service-state-color: var(--state-down);
   --service-state-glow: var(--glow-critical);
-  --service-state-glyph: "DN";
 }
 
 #services a {
@@ -516,21 +501,9 @@ ul {
   top: var(--space-xs);
   left: var(--space-xs);
   width: 1.5rem;
-  height: 1px;
+  height: 0.1875rem;
   background: var(--service-state-color);
   box-shadow: 0 0 8px var(--service-state-glow);
-}
-
-#services a::after {
-  content: "[" var(--service-state-glyph) "]";
-  position: absolute;
-  top: var(--space-xs);
-  right: var(--space-xs);
-  color: var(--service-state-color);
-  font-size: var(--text-xs);
-  font-weight: 700;
-  line-height: 1;
-  text-shadow: 0 0 8px var(--service-state-glow);
 }
 
 #services .service-name {
