@@ -8,11 +8,61 @@ self:
 let
   cfg = config.services.heimdash;
 
+  percentType = lib.types.ints.between 0 100;
+
+  thresholdType =
+    defaultWarn: defaultCritical:
+    lib.types.submodule {
+      options = {
+        warn = lib.mkOption {
+          type = percentType;
+          default = defaultWarn;
+          description = "Warning threshold percent.";
+        };
+        critical = lib.mkOption {
+          type = percentType;
+          default = defaultCritical;
+          description = "Critical threshold percent.";
+        };
+      };
+    };
+
+  diskThresholdType = lib.types.submodule {
+    options = {
+      mount = lib.mkOption {
+        type = lib.types.str;
+        description = "Mount point this threshold overrides.";
+      };
+      warn = lib.mkOption {
+        type = percentType;
+        default = 80;
+        description = "Warning threshold percent.";
+      };
+      critical = lib.mkOption {
+        type = percentType;
+        default = 90;
+        description = "Critical threshold percent.";
+      };
+    };
+  };
+
+  serviceNames = map (service: service.name) cfg.services;
+  nonEmptyServiceNames = lib.filter (name: name != "") serviceNames;
+  thresholdIsOrdered = threshold: threshold.warn < threshold.critical;
+  thresholdsAreOrdered =
+    cfg.thresholds == null
+    || (
+      thresholdIsOrdered cfg.thresholds.cpu
+      && thresholdIsOrdered cfg.thresholds.memory
+      && thresholdIsOrdered cfg.thresholds.disk
+      && lib.all thresholdIsOrdered cfg.thresholds.disks
+    );
+
   configFile = (pkgs.formats.json { }).generate "heimdash.json" (
     {
       inherit (cfg) listen mounts services;
     }
-    // lib.optionalAttrs (cfg.thresholds != { }) { inherit (cfg) thresholds; }
+    // lib.optionalAttrs (cfg.thresholds != null) { inherit (cfg) thresholds; }
   );
 in
 {
@@ -79,8 +129,33 @@ in
     };
 
     thresholds = lib.mkOption {
-      type = lib.types.attrsOf lib.types.anything;
-      default = { };
+      type = lib.types.nullOr (
+        lib.types.submodule {
+          options = {
+            cpu = lib.mkOption {
+              type = thresholdType 75 90;
+              default = { };
+              description = "CPU health thresholds.";
+            };
+            memory = lib.mkOption {
+              type = thresholdType 80 90;
+              default = { };
+              description = "Memory health thresholds.";
+            };
+            disk = lib.mkOption {
+              type = thresholdType 80 90;
+              default = { };
+              description = "Default disk health thresholds.";
+            };
+            disks = lib.mkOption {
+              type = lib.types.listOf diskThresholdType;
+              default = [ ];
+              description = "Per-mount disk health threshold overrides.";
+            };
+          };
+        }
+      );
+      default = null;
       example = {
         cpu = {
           warn = 70;
@@ -103,6 +178,29 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = lib.length nonEmptyServiceNames == lib.length (lib.unique nonEmptyServiceNames);
+        message = "services.heimdash.services names must be unique.";
+      }
+      {
+        assertion = lib.all (service: service.name != "") cfg.services;
+        message = "services.heimdash.services entries must have a non-empty name.";
+      }
+      {
+        assertion = lib.all (service: service.url != "") cfg.services;
+        message = "services.heimdash.services entries must have a non-empty url.";
+      }
+      {
+        assertion = lib.all (service: service.check == null || service.check != "") cfg.services;
+        message = "services.heimdash.services entries with check set must use a non-empty check URL.";
+      }
+      {
+        assertion = thresholdsAreOrdered;
+        message = "services.heimdash.thresholds warn values must be lower than critical values.";
+      }
+    ];
+
     systemd.services.heimdash = {
       description = "heimdash home-server dashboard";
       after = [ "network.target" ];

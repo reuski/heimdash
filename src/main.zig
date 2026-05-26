@@ -117,17 +117,22 @@ fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, stream: n
 }
 
 fn route(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config) !void {
-    const target = req.head.target;
-    if (std.mem.eql(u8, target, "/")) return servePage(req, arena, io, cfg);
-    if (std.mem.eql(u8, target, "/poll")) return servePoll(req, arena, io, cfg);
-    if (std.mem.eql(u8, target, "/poll/services")) return servePollServices(req, arena, io, gpa, cfg);
-    if (std.mem.eql(u8, target, "/style.css")) return serveAsset(req, style_css, "text/css; charset=utf-8");
-    if (std.mem.eql(u8, target, "/datastar.js")) return serveAsset(req, datastar_js, "application/javascript; charset=utf-8");
+    const path = requestPath(req.head.target);
+    if (std.mem.eql(u8, path, "/")) return servePage(req, arena, io, cfg);
+    if (std.mem.eql(u8, path, "/poll")) return servePoll(req, arena, io, cfg);
+    if (std.mem.eql(u8, path, "/poll/services")) return servePollServices(req, arena, io, gpa, cfg);
+    if (std.mem.eql(u8, path, "/style.css")) return serveAsset(req, style_css, "text/css; charset=utf-8");
+    if (std.mem.eql(u8, path, "/datastar.js")) return serveAsset(req, datastar_js, "application/javascript; charset=utf-8");
     try req.respond("not found\n", .{
         .status = .not_found,
         .keep_alive = false,
         .extra_headers = &.{.{ .name = "content-type", .value = "text/plain; charset=utf-8" }},
     });
+}
+
+fn requestPath(target: []const u8) []const u8 {
+    const query = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
+    return target[0..query];
 }
 
 const asset_cache: http.Header = .{ .name = "cache-control", .value = "public, max-age=31536000, immutable" };

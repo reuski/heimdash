@@ -1,243 +1,194 @@
 # heimdash Plan
 
-## Current Status
+## Current Contract
 
-| Area           | State                                                                                                      |
-| -------------- | ---------------------------------------------------------------------------------------------------------- |
-| Build          | `zig build` passes on Zig 0.16.0                                                                           |
-| Tests          | `zig build test`; pure units in `src/health.zig`, `src/format.zig`; run in CI via `unit-tests` flake check |
-| Binary         | Single executable target                                                                                   |
-| Dependencies   | Zig stdlib only                                                                                            |
-| Assets         | `index.html`, `style.css`, `datastar.js` embedded                                                          |
-| Config         | JSON: `listen`, `mounts`, `services`, optional `services[].check`, optional `thresholds`                   |
-| Default listen | `127.0.0.1:8080`                                                                                           |
-| NixOS          | Module emits config file and hardened systemd unit                                                         |
-| Runtime        | Detached thread per accepted connection                                                                    |
-| Metrics        | Hostname, uptime, CPU load, memory, disk free, per-row health state                                        |
-| Services       | Link cards with reachability states                                                                        |
-| Dynamic wire   | SSE `datastar-patch-elements`                                                                              |
-| Host contract  | Host agnostic; consuming flakes own hostnames, domains, ports, mounts, and inventory                       |
-
-## Implemented Routes
-
-| Method | Path             | Status             |
-| ------ | ---------------- | ------------------ |
-| `GET`  | `/`              | Full HTML page     |
-| `GET`  | `/poll`          | Metrics SSE patch  |
-| `GET`  | `/poll/services` | Services SSE patch |
-| `GET`  | `/style.css`     | Embedded asset     |
-| `GET`  | `/datastar.js`   | Embedded asset     |
-| any    | other            | `404 text/plain`   |
-
-## Scope
-
-- Host agnostic.
-- No hard-coded hostnames.
-- No hard-coded domains.
-- No hard-coded LAN addresses.
-- No hard-coded consuming-flake ports.
-- No built-in service inventory.
-- Consuming NixOS flakes own `listen`, `mounts`, and `services`.
+- Single Zig executable, stdlib only.
+- No runtime asset paths; every file under `assets/` is embedded.
+- JSON config is the Nix-to-Zig contract.
+- Config fields are additive only.
+- Consuming NixOS flakes own hostnames, domains, ports, mounts, and service inventory.
 - Heimdash owns rendering, polling, probing, read-only adapters, and dashboard state.
+- Dynamic responses use `text/event-stream` and `datastar-patch-elements`.
+- One arena per request, with `defer arena.deinit()`.
 
-## Target Service Kinds
+## Remaining Gaps
 
-| Kind             | Purpose                 |
-| ---------------- | ----------------------- |
-| `adguard`        | DNS/filtering dashboard |
-| `jellyfin`       | Media server            |
-| `sonarr`         | Series automation       |
-| `radarr`         | Movie automation        |
-| `prowlarr`       | Indexer management      |
-| `qbittorrent`    | Torrent client          |
-| `home_assistant` | Home automation         |
-
-## Completed
-
-### Metric Health States
-
-- `thresholds` config: `cpu` / `memory` / `disk` (each `warn` + `critical`) plus per-mount `disks` overrides; omitted fields fully defaulted (cpu 75/90, memory 80/90, disk 80/90).
-- Runtime classifies every metric row `ok` / `warn` / `critical` / `unknown`; missing `/proc` or `statfs` data renders `unknown`, never `critical`.
-- UI: `is-*` row state classes, CSS state glyphs, segmented meters preserved, expanded status palette in `:root` shared by metrics and services.
-- Classification lives in pure `src/health.zig`; `/poll` remains the only metrics morph endpoint.
-- NixOS module emits a `thresholds` passthrough; typing and assertions deferred to Priority 1 below.
-
-### Testing & Structure
-
-- Pure logic split into `src/health.zig` (thresholds, classification) and `src/format.zig` (byte/uptime formatting, meminfo parse, HTML escape), each with colocated `test` blocks.
-- `main.zig` is the IO/wiring edge and holds no unit tests.
-- `zig build test` builds each pure module as its own target; CI runs it via the `unit-tests` flake check.
-
-## Gap List
-
-- Render path couples `/proc` IO with HTML emit, so rendered output has no unit coverage.
-- No module assertions for invalid dashboard config.
 - No credentials contract for read-only service APIs.
 - No service-specific summary adapters.
+- Render path still couples `/proc` and `statfs` IO with HTML emission.
 - No long-lived SSE stream.
 
-## Next Step Evaluation
-
-| Candidate                  | Value  | Cost/Risk | Decision                                                                               |
-| -------------------------- | ------ | --------- | -------------------------------------------------------------------------------------- |
-| NixOS Module Guardrails    | High   | Low       | Next. Assertions now also cover `thresholds` config.                                   |
-| Service Summary Foundation | High   | Medium    | After guardrails. Split credential plumbing from adapters.                             |
-| Render Purity Refactor     | Medium | Low       | Optional. Separate gather (IO) from render (pure); unlocks render tests and eases SSE. |
-| Service Summary Adapters   | High   | High      | Build after the credential contract is proven.                                         |
-| Long-Lived SSE             | Medium | Medium    | Defer until metric and service patches are stable.                                     |
-
-## Priority 1: NixOS Module Guardrails
+## Priority 1: Service Summary Foundation
 
 ### Objective
 
-- Improve deployment ergonomics without making host assumptions.
-- Catch invalid dashboard config at evaluation time.
-- Keep config additive.
-
-### Actions
-
-- Type the `thresholds` option (currently freeform passthrough): percent ints with `warn` / `critical` and a `disks` list of `{ mount, warn, critical }`.
-- Add module assertions for duplicate service names.
-- Add module assertions for empty service names.
-- Add module assertions for empty service URLs.
-- Add module assertions for empty `check` URLs when present.
-- Add module assertions that warning thresholds are lower than critical thresholds.
-- Keep `services.heimdash.services = [ ]` valid.
-
-### Validation
-
-- `nix flake check` in CI.
-- Invalid module examples fail evaluation.
-- Minimal module example still evaluates.
-- Existing `check` and `thresholds` examples on the options stay valid.
-
-## Priority 2: Service Summary Foundation
-
-### Objective
-
-- Add safe read-only API config and credential plumbing.
-- No writes.
-- No control actions.
-- No secrets in JSON generated into the Nix store.
-- No service-specific API calls in this step.
-
-### Config
-
-- Extend `Service` with optional `kind`.
-- Extend `Service` with optional `credential`.
-- Accepted `kind` values:
-  - `adguard`
-  - `jellyfin`
-  - `sonarr`
-  - `radarr`
-  - `prowlarr`
-  - `qbittorrent`
-  - `home_assistant`
-- `credential` names a systemd credential file.
-- Missing `kind` keeps generic reachability only.
-- Missing `credential` disables API summary for that service.
-- Reachability remains active without credentials.
-
-### NixOS
-
-- Add `services.heimdash.credentials.<name>.path`.
-- Emit `LoadCredential = [ "<name>:<path>" ]`.
+- Add safe read-only API metadata and credential plumbing.
+- Keep generic reachability active for every service.
 - Keep generated JSON free of secret values.
-- Keep `DynamicUser = true`.
-- Zig reads credentials from `$CREDENTIALS_DIRECTORY/<name>`.
+- Do not add service-specific API calls in this step.
 
-### Runtime
+### Design Decisions
 
-- Load credentials only when `kind` and `credential` are both present.
-- Treat missing credential files as `summary unavailable`.
-- Keep probe state separate from API summary state.
-- Keep one arena per request.
+- `kind` is optional and only enables summary capability selection.
+- `credential` is optional and names a systemd credential file, not a secret value.
+- A service with no `kind` remains a generic link and reachability card.
+- A service with `kind` but no `credential` renders no API summary.
+- A service with missing credential material renders no API summary and does not affect reachability.
+- Credential names are opaque identifiers shared by service config and `LoadCredential`.
+
+### File Actions
+
+- `module.nix`
+  - Extend each service entry with optional `kind`.
+  - Extend each service entry with optional `credential`.
+  - Add `services.heimdash.credentials.<name>.path`.
+  - Emit `LoadCredential = [ "<name>:<path>" ]` from configured credential paths.
+  - Assert every configured service `credential` exists under `services.heimdash.credentials`.
+  - Assert credential names do not contain `/` or `:`.
+  - Keep `DynamicUser = true`.
+  - Keep generated JSON limited to service metadata, never credential path contents or values.
+- `src/main.zig`
+  - Extend `Service` with optional `kind` and `credential`.
+  - Add a pure helper that resolves `$CREDENTIALS_DIRECTORY/<name>`.
+  - Load credential bytes only when both `kind` and `credential` are present.
+  - Treat missing credential files as summary unavailable.
+  - Keep probe state separate from summary state.
+- `src/format.zig` or a new pure module
+  - Add small testable helpers for credential name validation and path joining if the code would otherwise sit in `main.zig`.
+  - Add the new pure module to the `build.zig` test target list if created.
+- `assets/index.html` and `assets/style.css`
+  - Preserve Datastar morph targets.
+  - Add only the minimal summary line structure needed for future adapters.
+  - Render unavailable summaries as blank.
+- `README.md`
+  - Document `kind`, `credential`, and `services.heimdash.credentials`.
+  - Show that secret values stay outside generated JSON.
 
 ### Validation
 
-- Unit-test credential path resolution.
-- Verify missing credential behavior.
-- Verify invalid credential name behavior.
-- Verify no credential value appears in generated JSON or process args.
+- `zig build test`.
+- `zig build`.
+- `git diff --check`.
+- `nix flake check` in CI.
+- Verify JSON output contains credential names but no secret values.
+- Verify process args include only the generated config path.
+- Verify missing credential files do not mark reachability as down.
+- Verify services without `kind` or `credential` still render and probe normally.
 
-## Priority 3: Service Summary Adapters
+## Priority 2: Service Summary Adapters
 
 ### Objective
 
-- Add one compact operational line per service.
-- Build adapters after the credential contract is proven.
-- Start with the shared `X-Api-Key` family before unique auth flows.
-
-### Adapters
-
-| Order | Kind             | Auth          | Read-only endpoints                                               |
-| ----- | ---------------- | ------------- | ----------------------------------------------------------------- |
-| 1     | `sonarr`         | `X-Api-Key`   | `/api/v3/system/status`, `/api/v3/queue/status`                   |
-| 1     | `radarr`         | `X-Api-Key`   | `/api/v3/system/status`, `/api/v3/queue/status`                   |
-| 1     | `prowlarr`       | `X-Api-Key`   | `/api/v1/system/status`, indexer health/count from instance API   |
-| 2     | `jellyfin`       | API key token | instance OpenAPI; first summary: server version + active sessions |
-| 3     | `adguard`        | HTTP Basic    | `/control/status`, `/control/stats`                               |
-| 4     | `qbittorrent`    | cookie login  | `/api/v2/app/version`, `/api/v2/transfer/info`                    |
-| 5     | `home_assistant` | Bearer token  | `/api/`, selected `/api/states/<entity_id>`                       |
-
-### Parser Scope
-
+- Add one compact read-only operational summary per supported service.
+- Keep adapter failures isolated from reachability state.
 - Parse only fields rendered by the UI.
-- Ignore unknown JSON fields.
-- Treat API auth failure as `summary unavailable`, not `down`.
-- Keep probe state separate from API summary state.
 
-### UI
+### Design Decisions
 
-- Keep service cards scannable.
-- Render status, name, link, and one summary line.
-- Render unavailable summaries as blank.
-- No control buttons.
+- Adapter output is `available` or `unavailable`; it is not a reachability verdict.
+- API auth failures render summary unavailable.
+- Unknown JSON fields are ignored.
+- HTTP client code stays thin; response parsing lives in pure testable helpers.
+- Start with services that share `X-Api-Key` semantics before unique auth flows.
+
+### Adapter Order
+
+| Order | Kind             | Auth          | First Summary                                    |
+| ----- | ---------------- | ------------- | ------------------------------------------------ |
+| 1     | `sonarr`         | `X-Api-Key`   | version plus queue count                         |
+| 1     | `radarr`         | `X-Api-Key`   | version plus queue count                         |
+| 1     | `prowlarr`       | `X-Api-Key`   | version plus indexer or health count             |
+| 2     | `jellyfin`       | API key token | server version plus active sessions              |
+| 3     | `adguard`        | HTTP Basic    | protection state plus query stats                |
+| 4     | `qbittorrent`    | cookie login  | app version plus transfer speed                  |
+| 5     | `home_assistant` | Bearer token  | API status plus one configured entity state line |
+
+### File Actions
+
+- Add service summary value types separate from reachability types.
+- Add one adapter dispatcher keyed by `kind`.
+- Add parser helpers and fixtures per adapter before wiring live requests.
+- Keep rendered service cards to status, name, link, and one summary line.
+- Do not add control buttons or write endpoints.
+- Do not persist API responses.
 
 ### Validation
 
-- Unit-test JSON parsers with fixture responses.
+- `zig build test`.
+- Fixture tests for every parser.
 - Smoke-test each adapter against a configured NixOS host.
-- Verify missing credential behavior.
-- Verify invalid credential behavior.
-- Verify no credential value appears in generated JSON or process args.
+- Verify auth failure and malformed JSON render summary unavailable.
+- Verify no credential value appears in generated JSON, logs, rendered HTML, or process args.
+
+## Priority 3: Render Purity Refactor
+
+### Objective
+
+- Separate metric gathering from metric rendering.
+- Give rendered output targeted unit coverage.
+- Prepare shared render paths for long-lived SSE.
+
+### Design Decisions
+
+- IO readers stay at the edge: `/proc`, hostname, uptime, `statfs`, sockets, and HTTP.
+- Pure render functions accept already gathered values.
+- Existing morph targets and CSS classes remain stable.
+- Pull-mode routes keep their current behavior.
+
+### File Actions
+
+- Move metric value structs and pure render helpers out of the IO-heavy path in `src/main.zig`.
+- Keep side-effecting readers thin and unmocked.
+- Add unit tests for metric row rendering, service card rendering, escaping, and unknown-state output.
+- Add any new pure module to the `build.zig` test target list.
+
+### Validation
+
+- `zig build test`.
+- `zig build`.
+- Request `/`, `/poll`, and `/poll/services` with a local config.
+- Verify Datastar morph target IDs are unchanged.
 
 ## Priority 4: Long-Lived SSE
 
 ### Objective
 
-- Replace pull-mode intervals with one stream after reachability and metric states are stable.
-- Preserve `datastar-patch-elements`.
-- Preserve `/poll` and `/poll/services` as compatibility/debug endpoints.
+- Add one streaming endpoint after summary rendering and pure render paths are stable.
+- Preserve pull-mode endpoints as compatibility and debugging surfaces.
 
-### Prerequisite
-
-- Render Purity Refactor: separate metric gathering (IO) from rendering (pure value → HTML) so the stream and pull paths share a tested renderer.
-
-### Runtime
+### Design Decisions
 
 - Add `GET /stream`.
-- Emit metrics every 30s.
-- Emit service reachability every 60s.
-- Emit comment heartbeat every 15s.
+- Emit metrics every 30 seconds.
+- Emit service reachability and summaries every 60 seconds.
+- Emit comment heartbeat every 15 seconds.
 - Close cleanly on client disconnect.
 - Keep one arena per stream.
 - Keep one binary and one process.
 
+### File Actions
+
+- Add a stream route that emits `datastar-patch-elements`.
+- Reuse pure render helpers from Priority 3.
+- Keep `/poll` and `/poll/services` intact.
+- Ensure stream loops do not retain per-tick allocations.
+
 ### Validation
 
+- `zig build test`.
+- `zig build`.
 - `curl -N http://127.0.0.1:<port>/stream`.
-- Browser idle for 30 minutes.
-- Repeated connect/disconnect cycle does not grow memory.
+- Browser idle test for 30 minutes.
+- Repeated connect and disconnect cycles do not grow memory.
 - Pull-mode endpoints still work.
 
 ## Out of Scope
 
-- Service start/stop/restart.
+- Service start, stop, or restart.
 - Torrent actions.
 - Home Assistant service calls.
-- Auth in Zig server.
-- TLS in Zig server.
+- Auth in the Zig server.
+- TLS in the Zig server.
 - Prometheus export.
 - Persistence.
 - Log browser.
