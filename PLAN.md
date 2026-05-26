@@ -2,26 +2,26 @@
 
 ## Current Status
 
-| Area           | State                                                                                |
-| -------------- | ------------------------------------------------------------------------------------ |
-| Build          | `zig build` passes on Zig 0.16.0                                                     |
+| Area           | State                                                                                                      |
+| -------------- | ---------------------------------------------------------------------------------------------------------- |
+| Build          | `zig build` passes on Zig 0.16.0                                                                           |
 | Tests          | `zig build test`; pure units in `src/health.zig`, `src/format.zig`; run in CI via `unit-tests` flake check |
-| Binary         | Single executable target                                                             |
-| Dependencies   | Zig stdlib only                                                                      |
-| Assets         | `index.html`, `style.css`, `datastar.js` embedded                                    |
-| Config         | JSON: `listen`, `mounts`, `services`, optional `services[].check`, optional `thresholds` |
-| Default listen | `127.0.0.1:8080`                                                                     |
-| NixOS          | Module emits config file and hardened systemd unit                                   |
-| Runtime        | Detached thread per accepted connection                                              |
-| Metrics        | Hostname, uptime, CPU load, memory, disk free, per-row health state                  |
-| Services       | Link cards with reachability states                                                  |
-| Dynamic wire   | SSE `datastar-patch-elements`                                                        |
-| Host contract  | Host agnostic; consuming flakes own hostnames, domains, ports, mounts, and inventory |
+| Binary         | Single executable target                                                                                   |
+| Dependencies   | Zig stdlib only                                                                                            |
+| Assets         | `index.html`, `style.css`, `datastar.js` embedded                                                          |
+| Config         | JSON: `listen`, `mounts`, `services`, optional `services[].check`, optional `thresholds`                   |
+| Default listen | `127.0.0.1:8080`                                                                                           |
+| NixOS          | Module emits config file and hardened systemd unit                                                         |
+| Runtime        | Detached thread per accepted connection                                                                    |
+| Metrics        | Hostname, uptime, CPU load, memory, disk free, per-row health state                                        |
+| Services       | Link cards with reachability states                                                                        |
+| Dynamic wire   | SSE `datastar-patch-elements`                                                                              |
+| Host contract  | Host agnostic; consuming flakes own hostnames, domains, ports, mounts, and inventory                       |
 
 ## Implemented Routes
 
-| Method | Path           | Status            |
-| ------ | -------------- | ----------------- |
+| Method | Path             | Status             |
+| ------ | ---------------- | ------------------ |
 | `GET`  | `/`              | Full HTML page     |
 | `GET`  | `/poll`          | Metrics SSE patch  |
 | `GET`  | `/poll/services` | Services SSE patch |
@@ -78,13 +78,13 @@
 
 ## Next Step Evaluation
 
-| Candidate                  | Value  | Cost/Risk | Decision                                                       |
-| -------------------------- | ------ | --------- | -------------------------------------------------------------- |
-| NixOS Module Guardrails    | High   | Low       | Next. Assertions now also cover `thresholds` config.           |
-| Service Summary Foundation | High   | Medium    | After guardrails. Split credential plumbing from adapters.     |
+| Candidate                  | Value  | Cost/Risk | Decision                                                                               |
+| -------------------------- | ------ | --------- | -------------------------------------------------------------------------------------- |
+| NixOS Module Guardrails    | High   | Low       | Next. Assertions now also cover `thresholds` config.                                   |
+| Service Summary Foundation | High   | Medium    | After guardrails. Split credential plumbing from adapters.                             |
 | Render Purity Refactor     | Medium | Low       | Optional. Separate gather (IO) from render (pure); unlocks render tests and eases SSE. |
-| Service Summary Adapters   | High   | High      | Build after the credential contract is proven.                 |
-| Long-Lived SSE             | Medium | Medium    | Defer until metric and service patches are stable.             |
+| Service Summary Adapters   | High   | High      | Build after the credential contract is proven.                                         |
+| Long-Lived SSE             | Medium | Medium    | Defer until metric and service patches are stable.                                     |
 
 ## Priority 1: NixOS Module Guardrails
 

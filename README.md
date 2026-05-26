@@ -27,7 +27,11 @@ No local Nix requirement in this workspace. CI is the canonical Nix check.
   "listen": "127.0.0.1:8080",
   "mounts": ["/", "/srv/media"],
   "services": [
-    { "name": "AdGuard", "url": "http://adguard.example.invalid", "check": "http://adguard.example.invalid/login.html" },
+    {
+      "name": "AdGuard",
+      "url": "http://adguard.example.invalid",
+      "check": "http://adguard.example.invalid/login.html"
+    },
     { "name": "Jellyfin", "url": "http://jellyfin.example.invalid" },
     { "name": "Sonarr", "url": "http://sonarr.example.invalid" },
     { "name": "Radarr", "url": "http://radarr.example.invalid" },
