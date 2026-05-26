@@ -1,76 +1,90 @@
-## Source of truth
+# Agent Instructions
 
-[`PLAN.md`](./PLAN.md) is the spec. Read it before proposing changes. If a suggestion conflicts with `PLAN.md`, prefer the plan or flag the conflict.
+## Source of Truth
 
-## Hard rules
+- `PLAN.md`: implementation status, scope, next steps.
+- `README.md`: user-facing commands, config, module usage.
+- `AGENTS.md`: agent rules.
+- If files conflict, prefer `PLAN.md` for implementation scope.
 
-- **Zig stdlib only.** No third‑party Zig deps. `build.zig.zon` `.dependencies` stays empty.
-- **Embedded assets.** Use `@embedFile` for everything under `assets/`. No runtime asset paths.
-- **JSON config is the Nix↔Zig contract.** Additive changes only; never reorder or rename existing fields.
-- **Stable IDs in markup.** Never rename a Datastar morph target without updating every handler that emits it.
-- **SSE on every dynamic response.** `text/event-stream` with `datastar-patch-elements` events — the same wire format must serve both pull‑mode polls and long‑lived streams.
-- **One arena per request**, `defer arena.deinit()`. Allocate freely inside.
-- **Single binary, single process.** No sidecars, no separate frontend service.
+## Hard Rules
+
+- Zig stdlib only.
+- Keep `build.zig.zon` `.dependencies` empty.
+- Embed every file under `assets/` with `@embedFile`.
+- No runtime asset paths.
+- Treat JSON config as the Nix-to-Zig contract.
+- Add config fields only.
+- Never rename or reorder existing config fields.
+- Never rename a Datastar morph target without updating every emitter.
+- Use `text/event-stream` and `datastar-patch-elements` for dynamic responses.
+- Keep one arena per request.
+- Use `defer arena.deinit()`.
+- Keep one binary and one process.
+- No sidecars.
+- No separate frontend service.
 
 ## Layout
 
-| Path                 | Purpose                                                   |
-| -------------------- | --------------------------------------------------------- |
-| `PLAN.md`            | Current spec and scope                                    |
-| `flake.nix`          | Zig (zig‑overlay master), ZLS, treefmt, package, devShell |
-| `module.nix`         | NixOS module: JSON config + hardened systemd unit         |
-| `build.zig`          | Single executable target                                  |
-| `build.zig.zon`      | Manifest; empty deps                                      |
-| `src/`               | All Zig code. Split files only when one hurts to read     |
-| `assets/`            | HTML, CSS, vendored Datastar JS — all `@embedFile`'d      |
-| `.github/workflows/` | CI: `nix flake check`                                     |
+| Path | Purpose |
+| --- | --- |
+| `PLAN.md` | status, scope, implementation plan |
+| `README.md` | commands, config, module usage |
+| `flake.nix` | Zig, ZLS, treefmt, package, dev shell |
+| `module.nix` | NixOS module |
+| `build.zig` | executable target |
+| `build.zig.zon` | manifest |
+| `src/` | Zig source |
+| `assets/` | embedded HTML/CSS/JS |
+| `.github/workflows/` | CI |
 
 ## Commands
 
 ```sh
-nix develop                                     # dev shell
-zig build                                       # build
-zig build run -- --config /path/to/config.json  # run
-nix flake check                                 # eval + formatter
-nix build .#default                             # build via Nix
-nix fmt                                         # treefmt
+nix develop
+zig build
+zig build run -- --config /path/to/config.json
+nix flake check
+nix build .#default
+nix fmt
 ```
 
-No local Nix here — CI is the canonical check (`gh run watch`). It runs `nix fmt` and commits the result back, so formatting fixes itself.
+No local Nix requirement in this workspace. CI is the canonical Nix check.
 
-## Code style
+## Code Style
 
-- Functional where applicable; isolate side effects to the edges (`/proc`, `statvfs`, sockets).
-- Self‑documenting names. Comments only for non‑obvious algorithmic rationale.
-- No premature abstraction. Three similar lines beat a wrong helper. Extract when a third caller appears, not before.
-- No backwards‑compat shims, no `// removed` notes, no unused `_var` renames. Delete dead code completely.
+- Isolate side effects to edges: `/proc`, `statfs`, sockets, HTTP.
+- Prefer immutable values and small pure helpers.
+- Use precise names.
+- No comments unless algorithmic rationale is not obvious.
+- No premature abstraction.
+- Extract only after a third caller or clear readability pressure.
+- Delete dead code.
+- No compatibility shims.
+- No unused placeholder renames.
 
-## Visual language
+## Visual Language
 
-A **retro mainframe CRT terminal**: the orange plasma glow of a PLATO panel
-(_The Friendly Orange Glow_), green‑phosphor VT screens, sci‑fi console
-readouts. Atmosphere never costs legibility.
+- Retro mainframe CRT terminal.
+- Monospace only.
+- One accent channel on near-black.
+- All colors in `:root` custom properties.
+- No hard-coded rule colors.
+- Glow via `text-shadow` and `box-shadow`.
+- No depth shadows.
+- No glass.
+- No decorative gradients except scanlines, meters, sweep.
+- Sharp chrome: 1px borders, hairline radius.
+- Section headers as labelled rules.
+- Glyphs via text or pseudo-elements.
+- No emoji.
+- Segmented meters.
+- Sparse motion behind `prefers-reduced-motion`.
+- Restyle only `assets/index.html` and `assets/style.css`.
+- Preserve server morph hooks.
 
-- **Monochrome phosphor.** One accent channel on a near‑black field; all
-  colour lives in `:root` custom properties — never hard‑code a colour in a
-  rule. Green (`--accent`) is live, amber the heritage swap. Dark is primary;
-  `prefers-color-scheme: light` is a paper terminal with `--glow` off.
-- **Glow, not gloss.** Luminance via `text-shadow`/`box-shadow` in `--glow`.
-  No depth shadows, no glass, no gradients but the structural ones (scanlines,
-  meters).
-- **Monospace only.** The `ui-monospace` stack, `UPPERCASE` letter‑spaced
-  labels, `tabular-nums` figures.
-- **Sharp chrome.** 1px `--border`, hairline `--radius`. One framed window
-  with a title bar; section headers are labelled rules, not cards.
-- **Glyphs, not emoji.** Box‑drawing/terminal marks via pseudo‑elements:
-  `›▋` prompt, `▮` header, `▸` bullet, `●` status.
-- **Segmented‑LED meters**, not smooth fills.
-- **Sparse motion** — a cursor blink, a `LIVE` pulse — all behind
-  `prefers-reduced-motion`.
-- **Scope.** `assets/index.html` + `assets/style.css` only, `@embedFile`'d,
-  prettier‑clean. Restyle via CSS; never rename the server's morph hooks.
-  Extend this language, don't add a second.
+## Scope Control
 
-## Scope
-
-Anything not in `PLAN.md` is out of scope. New features land in `PLAN.md` first, then in code. Push back on scope creep before writing any of it.
+- New features land in `PLAN.md` first.
+- Anything outside `PLAN.md` is out of scope.
+- Push back before writing scope creep.

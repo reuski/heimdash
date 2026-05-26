@@ -9,26 +9,31 @@
   </head>
   <body>
     <main>
-      <div class="titlebar">
-        <span class="brand">HEIMDASH</span>
-        <span class="live"><i class="dot"></i>LIVE</span>
-      </div>
+      <div class="terminal">
+        <div class="titlebar">
+          <span class="deck">DECK 01</span>
+          <span class="brand">HEIMDASH</span>
+          <span class="live"><i class="dot"></i>LIVE</span>
+        </div>
 
-      <div class="screen">
-        <header id="hostline">
-          <h1>heimdash</h1>
-          <span id="uptime"></span>
-        </header>
+        <div class="screen">
+          <header id="hostline">
+            <h1>heimdash</h1>
+            <span id="uptime"></span>
+          </header>
 
-        <section id="metrics">
-          <h2>Disks</h2>
-          <ul id="disks"></ul>
-        </section>
+          <div class="dashboard-grid">
+            <section id="metrics">
+              <h2>Disks</h2>
+              <ul id="disks"></ul>
+            </section>
 
-        <section>
-          <h2>Services</h2>
-          <ul id="services"></ul>
-        </section>
+            <section class="service-panel">
+              <h2>Services</h2>
+              <ul id="services"></ul>
+            </section>
+          </div>
+        </div>
       </div>
     </main>
 
