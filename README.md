@@ -72,12 +72,12 @@ No local Nix requirement in this workspace. CI is the canonical Nix check.
 
 ## Routes
 
-| Method | Path | Response |
-| --- | --- | --- |
-| `GET` | `/` | HTML |
-| `GET` | `/poll` | metrics SSE patch |
-| `GET` | `/style.css` | embedded CSS |
-| `GET` | `/datastar.js` | embedded JS |
+| Method | Path           | Response          |
+| ------ | -------------- | ----------------- |
+| `GET`  | `/`            | HTML              |
+| `GET`  | `/poll`        | metrics SSE patch |
+| `GET`  | `/style.css`   | embedded CSS      |
+| `GET`  | `/datastar.js` | embedded JS       |
 
 ## License
 

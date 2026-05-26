@@ -26,17 +26,17 @@
 
 ## Layout
 
-| Path | Purpose |
-| --- | --- |
-| `PLAN.md` | status, scope, implementation plan |
-| `README.md` | commands, config, module usage |
-| `flake.nix` | Zig, ZLS, treefmt, package, dev shell |
-| `module.nix` | NixOS module |
-| `build.zig` | executable target |
-| `build.zig.zon` | manifest |
-| `src/` | Zig source |
-| `assets/` | embedded HTML/CSS/JS |
-| `.github/workflows/` | CI |
+| Path                 | Purpose                               |
+| -------------------- | ------------------------------------- |
+| `PLAN.md`            | status, scope, implementation plan    |
+| `README.md`          | commands, config, module usage        |
+| `flake.nix`          | Zig, ZLS, treefmt, package, dev shell |
+| `module.nix`         | NixOS module                          |
+| `build.zig`          | executable target                     |
+| `build.zig.zon`      | manifest                              |
+| `src/`               | Zig source                            |
+| `assets/`            | embedded HTML/CSS/JS                  |
+| `.github/workflows/` | CI                                    |
 
 ## Commands
 
