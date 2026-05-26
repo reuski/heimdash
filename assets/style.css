@@ -66,7 +66,11 @@ body::before {
   z-index: 10;
   pointer-events: none;
   background-image:
-    repeating-linear-gradient(0deg, var(--scanline-dark) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(
+      0deg,
+      var(--scanline-dark) 0 1px,
+      transparent 1px 4px
+    ),
     repeating-linear-gradient(90deg, transparent 0 2px, var(--scanline) 2px 3px);
   mix-blend-mode: screen;
 }
@@ -283,7 +287,10 @@ ul {
 
 #metrics li {
   display: grid;
-  grid-template-columns: minmax(7rem, 11rem) minmax(9rem, 1fr) minmax(6.5rem, 9rem);
+  grid-template-columns: minmax(7rem, 11rem) minmax(9rem, 1fr) minmax(
+      6.5rem,
+      9rem
+    );
   align-items: center;
   gap: var(--space-md);
   min-height: 2.375rem;
@@ -343,7 +350,10 @@ ul {
 
 #services {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--tile-min)), 1fr));
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(min(100%, var(--tile-min)), 1fr)
+  );
   grid-auto-rows: minmax(var(--tile-h), 1fr);
   gap: var(--space-sm);
   min-height: 0;

@@ -2,30 +2,30 @@
 
 ## Current Status
 
-| Area | State |
-| --- | --- |
-| Build | `zig build` passes on Zig 0.16.0 |
-| Binary | Single executable target |
-| Dependencies | Zig stdlib only |
-| Assets | `index.html`, `style.css`, `datastar.js` embedded |
-| Config | JSON: `listen`, `mounts`, `services` |
-| Default listen | `127.0.0.1:8080` |
-| NixOS | Module emits config file and hardened systemd unit |
-| Runtime | Serial accept loop |
-| Metrics | Hostname, uptime, CPU load, memory, disk free |
-| Services | Static link cards |
-| Dynamic wire | SSE `datastar-patch-elements` |
-| Host contract | Host agnostic; consuming flakes own hostnames, domains, ports, mounts, and inventory |
+| Area           | State                                                                                |
+| -------------- | ------------------------------------------------------------------------------------ |
+| Build          | `zig build` passes on Zig 0.16.0                                                     |
+| Binary         | Single executable target                                                             |
+| Dependencies   | Zig stdlib only                                                                      |
+| Assets         | `index.html`, `style.css`, `datastar.js` embedded                                    |
+| Config         | JSON: `listen`, `mounts`, `services`                                                 |
+| Default listen | `127.0.0.1:8080`                                                                     |
+| NixOS          | Module emits config file and hardened systemd unit                                   |
+| Runtime        | Serial accept loop                                                                   |
+| Metrics        | Hostname, uptime, CPU load, memory, disk free                                        |
+| Services       | Static link cards                                                                    |
+| Dynamic wire   | SSE `datastar-patch-elements`                                                        |
+| Host contract  | Host agnostic; consuming flakes own hostnames, domains, ports, mounts, and inventory |
 
 ## Implemented Routes
 
-| Method | Path | Status |
-| --- | --- | --- |
-| `GET` | `/` | Full HTML page |
-| `GET` | `/poll` | Metrics SSE patch |
-| `GET` | `/style.css` | Embedded asset |
-| `GET` | `/datastar.js` | Embedded asset |
-| any | other | `404 text/plain` |
+| Method | Path           | Status            |
+| ------ | -------------- | ----------------- |
+| `GET`  | `/`            | Full HTML page    |
+| `GET`  | `/poll`        | Metrics SSE patch |
+| `GET`  | `/style.css`   | Embedded asset    |
+| `GET`  | `/datastar.js` | Embedded asset    |
+| any    | other          | `404 text/plain`  |
 
 ## Scope
 
@@ -40,15 +40,15 @@
 
 ## Target Service Kinds
 
-| Kind | Purpose |
-| --- | --- |
-| `adguard` | DNS/filtering dashboard |
-| `jellyfin` | Media server |
-| `sonarr` | Series automation |
-| `radarr` | Movie automation |
-| `prowlarr` | Indexer management |
-| `qbittorrent` | Torrent client |
-| `home_assistant` | Home automation |
+| Kind             | Purpose                 |
+| ---------------- | ----------------------- |
+| `adguard`        | DNS/filtering dashboard |
+| `jellyfin`       | Media server            |
+| `sonarr`         | Series automation       |
+| `radarr`         | Movie automation        |
+| `prowlarr`       | Indexer management      |
+| `qbittorrent`    | Torrent client          |
+| `home_assistant` | Home automation         |
 
 ## Gap List
 
@@ -193,15 +193,15 @@
 
 ### Adapters
 
-| Kind | Auth | Read-only endpoints |
-| --- | --- | --- |
-| `adguard` | HTTP Basic | `/control/status`, `/control/stats` |
-| `jellyfin` | API key token | instance OpenAPI; first summary: server version + active sessions |
-| `sonarr` | `X-Api-Key` | `/api/v3/system/status`, `/api/v3/queue/status` |
-| `radarr` | `X-Api-Key` | `/api/v3/system/status`, `/api/v3/queue/status` |
-| `prowlarr` | `X-Api-Key` | `/api/v1/system/status`, indexer health/count from instance API |
-| `qbittorrent` | cookie login | `/api/v2/app/version`, `/api/v2/transfer/info` |
-| `home_assistant` | Bearer token | `/api/`, selected `/api/states/<entity_id>` |
+| Kind             | Auth          | Read-only endpoints                                               |
+| ---------------- | ------------- | ----------------------------------------------------------------- |
+| `adguard`        | HTTP Basic    | `/control/status`, `/control/stats`                               |
+| `jellyfin`       | API key token | instance OpenAPI; first summary: server version + active sessions |
+| `sonarr`         | `X-Api-Key`   | `/api/v3/system/status`, `/api/v3/queue/status`                   |
+| `radarr`         | `X-Api-Key`   | `/api/v3/system/status`, `/api/v3/queue/status`                   |
+| `prowlarr`       | `X-Api-Key`   | `/api/v1/system/status`, indexer health/count from instance API   |
+| `qbittorrent`    | cookie login  | `/api/v2/app/version`, `/api/v2/transfer/info`                    |
+| `home_assistant` | Bearer token  | `/api/`, selected `/api/states/<entity_id>`                       |
 
 ### Parser Scope
 
