@@ -67,6 +67,21 @@
             };
           };
 
+          checks.unit-tests = pkgs.stdenv.mkDerivation {
+            name = "heimdash-unit-tests";
+            src = ./.;
+            nativeBuildInputs = [ zig ];
+            dontConfigure = true;
+            dontInstall = true;
+            buildPhase = ''
+              runHook preBuild
+              export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)
+              zig build test
+              touch $out
+              runHook postBuild
+            '';
+          };
+
           apps.default = {
             type = "app";
             program = "${config.packages.default}/bin/heimdash";

@@ -4,6 +4,9 @@ const Io = std.Io;
 const net = std.Io.net;
 const http = std.http;
 
+const health = @import("health.zig");
+const format = @import("format.zig");
+
 const index_html = @embedFile("index.html");
 const style_css = @embedFile("style.css");
 const datastar_js = @embedFile("datastar.js");
@@ -18,6 +21,7 @@ const Config = struct {
     listen: []const u8,
     mounts: []const []const u8,
     services: []const Service,
+    thresholds: health.Config = .{},
 };
 
 const ServiceReachability = enum { checking, up, down };
@@ -150,7 +154,7 @@ fn servePoll(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll("event: datastar-patch-elements\ndata: elements ");
-    try renderMetrics(w, io, cfg.mounts);
+    try renderMetrics(w, io, cfg);
     try w.writeAll("\n\n");
     try req.respond(aw.written(), .{
         .keep_alive = false,
@@ -187,7 +191,7 @@ fn renderPage(w: *Io.Writer, io: Io, cfg: *const Config) !void {
     const hostname = readHostname(io, &hostname_buf) catch "unknown";
 
     var uptime_buf: [64]u8 = undefined;
-    const uptime_text = formatUptime(&uptime_buf, readUptime(io) catch 0);
+    const uptime_text = format.uptime(&uptime_buf, readUptime(io) catch 0);
 
     var i: usize = 0;
     while (i < index_html.len) {
@@ -195,7 +199,7 @@ fn renderPage(w: *Io.Writer, io: Io, cfg: *const Config) !void {
 
         if (startsWith(rest, "<h1>heimdash</h1>")) |n| {
             try w.writeAll("<h1>");
-            try writeEscaped(w, hostname);
+            try format.escape(w, hostname);
             try w.writeAll("</h1>");
             i += n;
             continue;
@@ -203,7 +207,7 @@ fn renderPage(w: *Io.Writer, io: Io, cfg: *const Config) !void {
 
         if (startsWith(rest, "<span id=\"uptime\"></span>")) |n| {
             try w.writeAll("<span id=\"uptime\">");
-            try writeEscaped(w, uptime_text);
+            try format.escape(w, uptime_text);
             try w.writeAll("</span>");
             i += n;
             continue;
@@ -212,7 +216,7 @@ fn renderPage(w: *Io.Writer, io: Io, cfg: *const Config) !void {
         if (startsWith(rest, "<section id=\"metrics\">")) |_| {
             const end_tag = "</section>";
             const end = std.mem.indexOfPos(u8, index_html, i, end_tag) orelse return error.InvalidIndexHtml;
-            try renderMetrics(w, io, cfg.mounts);
+            try renderMetrics(w, io, cfg);
             i = end + end_tag.len;
             continue;
         }
@@ -241,9 +245,9 @@ fn renderServices(w: *Io.Writer, services: []const Service, states: ?[]const Ser
         try w.writeAll("<li class=\"");
         try w.writeAll(serviceReachabilityClass(state));
         try w.writeAll("\"><a href=\"");
-        try writeEscaped(w, svc.url);
+        try format.escape(w, svc.url);
         try w.writeAll("\"><span class=\"service-name\">");
-        try writeEscaped(w, svc.name);
+        try format.escape(w, svc.name);
         try w.writeAll("</span><span class=\"service-state\">");
         try w.writeAll(@tagName(state));
         try w.writeAll("</span></a></li>");
@@ -311,51 +315,58 @@ fn isReachableStatus(status: http.Status) bool {
     };
 }
 
-fn renderMetrics(w: *Io.Writer, io: Io, mounts: []const []const u8) !void {
+fn renderMetrics(w: *Io.Writer, io: Io, cfg: *const Config) !void {
+    const t = cfg.thresholds;
     try w.writeAll("<section id=\"metrics\"><h2>System</h2><ul id=\"system\">");
 
-    const load = readLoadAvg(io) catch 0;
+    const load_opt: ?f64 = readLoadAvg(io) catch null;
     const ncpu = std.Thread.getCpuCount() catch 1;
-    const cpu_pct: u64 = @min(100, @as(u64, @intFromFloat(load / @as(f64, @floatFromInt(ncpu)) * 100.0)));
     var cbuf: [32]u8 = undefined;
-    try renderBarRow(w, "CPU", cpu_pct, std.fmt.bufPrint(&cbuf, "load {d:.2}", .{load}) catch "?");
+    const cpu_pct: ?u64 = if (load_opt) |load|
+        @min(100, @as(u64, @intFromFloat(load / @as(f64, @floatFromInt(ncpu)) * 100.0)))
+    else
+        null;
+    const cpu_detail = if (load_opt) |load|
+        std.fmt.bufPrint(&cbuf, "load {d:.2}", .{load}) catch "?"
+    else
+        "load --";
+    try renderBarRow(w, "CPU", cpu_pct, cpu_detail, health.classify(cpu_pct, t.cpu));
 
     const mem = readMemInfo(io) catch MemInfo{ .total = 0, .available = 0 };
     const mem_used = if (mem.total > mem.available) mem.total - mem.available else 0;
-    const mem_pct: u64 = if (mem.total == 0) 0 else @min(100, mem_used * 100 / mem.total);
+    const mem_pct: ?u64 = if (mem.total == 0) null else @min(100, mem_used * 100 / mem.total);
     var mfb: [32]u8 = undefined;
     var mdb: [48]u8 = undefined;
-    try renderBarRow(w, "Memory", mem_pct, std.fmt.bufPrint(&mdb, "{s} free", .{formatBytes(&mfb, mem.available)}) catch "?");
+    const mem_detail = if (mem.total == 0)
+        "-- free"
+    else
+        std.fmt.bufPrint(&mdb, "{s} free", .{format.bytes(&mfb, mem.available)}) catch "?";
+    try renderBarRow(w, "Memory", mem_pct, mem_detail, health.classify(mem_pct, t.memory));
 
     try w.writeAll("</ul><h2>Disks</h2><ul id=\"disks\">");
-    for (mounts) |mnt| {
+    for (cfg.mounts) |mnt| {
         const fs = readDiskFree(mnt) catch DiskUsage{ .total = 0, .free = 0 };
         const used = if (fs.total > fs.free) fs.total - fs.free else 0;
-        const pct: u64 = if (fs.total == 0) 0 else @min(100, used * 100 / fs.total);
+        const pct: ?u64 = if (fs.total == 0) null else @min(100, used * 100 / fs.total);
         var fbuf: [32]u8 = undefined;
         var dbuf: [48]u8 = undefined;
-        try renderBarRow(w, mnt, pct, std.fmt.bufPrint(&dbuf, "{s} free", .{formatBytes(&fbuf, fs.free)}) catch "?");
+        const detail = if (fs.total == 0)
+            "-- free"
+        else
+            std.fmt.bufPrint(&dbuf, "{s} free", .{format.bytes(&fbuf, fs.free)}) catch "?";
+        try renderBarRow(w, mnt, pct, detail, health.classify(pct, health.diskThresholdFor(t, mnt)));
     }
     try w.writeAll("</ul></section>");
 }
 
-fn renderBarRow(w: *Io.Writer, label: []const u8, pct: u64, detail: []const u8) !void {
-    try w.writeAll("<li><span class=\"label\">");
-    try writeEscaped(w, label);
-    try w.print("</span><span class=\"bar\"><span style=\"width:{d}%\"></span></span><span class=\"free\">", .{pct});
-    try writeEscaped(w, detail);
+fn renderBarRow(w: *Io.Writer, label: []const u8, pct: ?u64, detail: []const u8, state: health.State) !void {
+    try w.writeAll("<li class=\"");
+    try w.writeAll(health.cssClass(state));
+    try w.writeAll("\"><span class=\"label\">");
+    try format.escape(w, label);
+    try w.print("</span><span class=\"bar\"><span style=\"width:{d}%\"></span></span><span class=\"free\">", .{pct orelse 0});
+    try format.escape(w, detail);
     try w.writeAll("</span></li>");
-}
-
-fn writeEscaped(w: *Io.Writer, s: []const u8) !void {
-    for (s) |c| switch (c) {
-        '&' => try w.writeAll("&amp;"),
-        '<' => try w.writeAll("&lt;"),
-        '>' => try w.writeAll("&gt;"),
-        '"' => try w.writeAll("&quot;"),
-        '\'' => try w.writeAll("&#39;"),
-        else => try w.writeByte(c),
-    };
 }
 
 fn readHostname(io: Io, buf: []u8) ![]const u8 {
@@ -397,36 +408,9 @@ fn readMemInfo(io: Io) !MemInfo {
     const n = try fr.interface.readSliceShort(&buf);
     const text = buf[0..n];
     return .{
-        .total = parseMemKb(text, "MemTotal:") * 1024,
-        .available = parseMemKb(text, "MemAvailable:") * 1024,
+        .total = format.parseMemKb(text, "MemTotal:") * 1024,
+        .available = format.parseMemKb(text, "MemAvailable:") * 1024,
     };
-}
-
-fn parseMemKb(text: []const u8, key: []const u8) u64 {
-    const idx = std.mem.indexOf(u8, text, key) orelse return 0;
-    const rest = std.mem.trimStart(u8, text[idx + key.len ..], " \t");
-    const end = std.mem.indexOfAny(u8, rest, " \t\n") orelse rest.len;
-    return std.fmt.parseInt(u64, rest[0..end], 10) catch 0;
-}
-
-fn formatUptime(buf: []u8, seconds: u64) []const u8 {
-    if (seconds == 0) return std.fmt.bufPrint(buf, "uptime unknown", .{}) catch "uptime unknown";
-    const days = seconds / 86_400;
-    const hours = (seconds % 86_400) / 3_600;
-    const mins = (seconds % 3_600) / 60;
-    return std.fmt.bufPrint(buf, "up {d}d {d}h {d}m", .{ days, hours, mins }) catch "up";
-}
-
-fn formatBytes(buf: []u8, bytes: u64) []const u8 {
-    const units = [_][]const u8{ "B", "KiB", "MiB", "GiB", "TiB", "PiB" };
-    var value: f64 = @floatFromInt(bytes);
-    var unit: usize = 0;
-    while (value >= 1024.0 and unit + 1 < units.len) : (unit += 1) value /= 1024.0;
-    const result = if (unit == 0)
-        std.fmt.bufPrint(buf, "{d:.0} {s}", .{ value, units[unit] })
-    else
-        std.fmt.bufPrint(buf, "{d:.1} {s}", .{ value, units[unit] });
-    return result catch "?";
 }
 
 fn readDiskFree(path: []const u8) !DiskUsage {

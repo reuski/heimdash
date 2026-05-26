@@ -34,9 +34,19 @@ No local Nix requirement in this workspace. CI is the canonical Nix check.
     { "name": "Prowlarr", "url": "http://prowlarr.example.invalid" },
     { "name": "qBittorrent", "url": "http://qbittorrent.example.invalid" },
     { "name": "Home Assistant", "url": "http://home-assistant.example.invalid" }
-  ]
+  ],
+  "thresholds": {
+    "cpu": { "warn": 75, "critical": 90 },
+    "memory": { "warn": 80, "critical": 90 },
+    "disk": { "warn": 80, "critical": 90 },
+    "disks": [{ "mount": "/srv/media", "warn": 90, "critical": 97 }]
+  }
 }
 ```
+
+`thresholds` is optional. Each metric row reports `ok`, `warn`, `critical`, or
+`unknown` against these percent limits; omitted fields fall back to the built-in
+defaults shown above, and `disks` entries override the shared disk limit per mount.
 
 ## NixOS Module
 

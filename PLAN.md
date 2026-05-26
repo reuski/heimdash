@@ -5,14 +5,15 @@
 | Area           | State                                                                                |
 | -------------- | ------------------------------------------------------------------------------------ |
 | Build          | `zig build` passes on Zig 0.16.0                                                     |
+| Tests          | `zig build test`; pure units in `src/health.zig`, `src/format.zig`; run in CI via `unit-tests` flake check |
 | Binary         | Single executable target                                                             |
 | Dependencies   | Zig stdlib only                                                                      |
 | Assets         | `index.html`, `style.css`, `datastar.js` embedded                                    |
-| Config         | JSON: `listen`, `mounts`, `services`, optional `services[].check`                    |
+| Config         | JSON: `listen`, `mounts`, `services`, optional `services[].check`, optional `thresholds` |
 | Default listen | `127.0.0.1:8080`                                                                     |
 | NixOS          | Module emits config file and hardened systemd unit                                   |
 | Runtime        | Detached thread per accepted connection                                              |
-| Metrics        | Hostname, uptime, CPU load, memory, disk free                                        |
+| Metrics        | Hostname, uptime, CPU load, memory, disk free, per-row health state                  |
 | Services       | Link cards with reachability states                                                  |
 | Dynamic wire   | SSE `datastar-patch-elements`                                                        |
 | Host contract  | Host agnostic; consuming flakes own hostnames, domains, ports, mounts, and inventory |
@@ -51,9 +52,25 @@
 | `qbittorrent`    | Torrent client          |
 | `home_assistant` | Home automation         |
 
+## Completed
+
+### Metric Health States
+
+- `thresholds` config: `cpu` / `memory` / `disk` (each `warn` + `critical`) plus per-mount `disks` overrides; omitted fields fully defaulted (cpu 75/90, memory 80/90, disk 80/90).
+- Runtime classifies every metric row `ok` / `warn` / `critical` / `unknown`; missing `/proc` or `statfs` data renders `unknown`, never `critical`.
+- UI: `is-*` row state classes, CSS state glyphs, segmented meters preserved, expanded status palette in `:root` shared by metrics and services.
+- Classification lives in pure `src/health.zig`; `/poll` remains the only metrics morph endpoint.
+- NixOS module emits a `thresholds` passthrough; typing and assertions deferred to Priority 1 below.
+
+### Testing & Structure
+
+- Pure logic split into `src/health.zig` (thresholds, classification) and `src/format.zig` (byte/uptime formatting, meminfo parse, HTML escape), each with colocated `test` blocks.
+- `main.zig` is the IO/wiring edge and holds no unit tests.
+- `zig build test` builds each pure module as its own target; CI runs it via the `unit-tests` flake check.
+
 ## Gap List
 
-- No metric health states or thresholds.
+- Render path couples `/proc` IO with HTML emit, so rendered output has no unit coverage.
 - No module assertions for invalid dashboard config.
 - No credentials contract for read-only service APIs.
 - No service-specific summary adapters.
@@ -61,54 +78,15 @@
 
 ## Next Step Evaluation
 
-| Candidate                  | Value  | Cost/Risk | Decision                                           |
-| -------------------------- | ------ | --------- | -------------------------------------------------- |
-| Metric Health States       | High   | Low       | Next. Makes existing metrics actionable.           |
-| NixOS Module Guardrails    | High   | Low       | Do after thresholds so assertions cover new config. |
-| Service Summary Foundation | High   | Medium    | Split credential plumbing from service adapters.   |
-| Service Summary Adapters   | High   | High      | Build after credential contract is proven.         |
-| Long-Lived SSE             | Medium | Medium    | Defer until metrics and service patches are stable. |
+| Candidate                  | Value  | Cost/Risk | Decision                                                       |
+| -------------------------- | ------ | --------- | -------------------------------------------------------------- |
+| NixOS Module Guardrails    | High   | Low       | Next. Assertions now also cover `thresholds` config.           |
+| Service Summary Foundation | High   | Medium    | After guardrails. Split credential plumbing from adapters.     |
+| Render Purity Refactor     | Medium | Low       | Optional. Separate gather (IO) from render (pure); unlocks render tests and eases SSE. |
+| Service Summary Adapters   | High   | High      | Build after the credential contract is proven.                 |
+| Long-Lived SSE             | Medium | Medium    | Defer until metric and service patches are stable.             |
 
-## Priority 1: Metric Health States
-
-### Objective
-
-- Make existing CPU, memory, and disk metrics actionable.
-- Add warning and critical states without adding persistence or alert delivery.
-
-### Config
-
-- Extend config with optional `thresholds`.
-- Defaults:
-  - CPU warn `75`, critical `90`.
-  - Memory warn `80`, critical `90`.
-  - Disk warn `80`, critical `90`.
-- Allow per-mount disk threshold overrides.
-- Keep omitted thresholds fully defaulted.
-
-### Runtime
-
-- Compute `ok`, `warn`, `critical`, or `unknown` for every metric row.
-- Keep calculations inside existing readers/render path.
-- Keep `/poll` as the only metrics morph endpoint.
-- Do not add historical sampling.
-
-### UI
-
-- Add row state classes.
-- Add state glyphs with CSS.
-- Keep segmented meters.
-- Keep all colors in `:root`.
-- Preserve `section#metrics`, `ul#system`, and `ul#disks`.
-
-### Validation
-
-- Unit-test threshold classification helper.
-- `zig build`.
-- `/poll` returns state classes for CPU, memory, and disks.
-- Missing `/proc` data renders `unknown`, not `critical`.
-
-## Priority 2: NixOS Module Guardrails
+## Priority 1: NixOS Module Guardrails
 
 ### Objective
 
@@ -118,7 +96,7 @@
 
 ### Actions
 
-- Add examples for optional `check` and thresholds.
+- Type the `thresholds` option (currently freeform passthrough): percent ints with `warn` / `critical` and a `disks` list of `{ mount, warn, critical }`.
 - Add module assertions for duplicate service names.
 - Add module assertions for empty service names.
 - Add module assertions for empty service URLs.
@@ -131,8 +109,9 @@
 - `nix flake check` in CI.
 - Invalid module examples fail evaluation.
 - Minimal module example still evaluates.
+- Existing `check` and `thresholds` examples on the options stay valid.
 
-## Priority 3: Service Summary Foundation
+## Priority 2: Service Summary Foundation
 
 ### Objective
 
@@ -181,7 +160,7 @@
 - Verify invalid credential name behavior.
 - Verify no credential value appears in generated JSON or process args.
 
-## Priority 4: Service Summary Adapters
+## Priority 3: Service Summary Adapters
 
 ### Objective
 
@@ -223,13 +202,17 @@
 - Verify invalid credential behavior.
 - Verify no credential value appears in generated JSON or process args.
 
-## Priority 5: Long-Lived SSE
+## Priority 4: Long-Lived SSE
 
 ### Objective
 
 - Replace pull-mode intervals with one stream after reachability and metric states are stable.
 - Preserve `datastar-patch-elements`.
 - Preserve `/poll` and `/poll/services` as compatibility/debug endpoints.
+
+### Prerequisite
+
+- Render Purity Refactor: separate metric gathering (IO) from rendering (pure value → HTML) so the stream and pull paths share a tested renderer.
 
 ### Runtime
 

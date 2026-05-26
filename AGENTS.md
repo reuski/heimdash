@@ -43,6 +43,7 @@
 ```sh
 nix develop
 zig build
+zig build test
 zig build run -- --config /path/to/config.json
 nix flake check
 nix build .#default
@@ -50,6 +51,15 @@ nix fmt
 ```
 
 No local Nix requirement in this workspace. CI is the canonical Nix check.
+
+## Testing
+
+- Pure logic lives in `src/health.zig` and `src/format.zig` with colocated `test` blocks.
+- `main.zig` is the IO/wiring edge; keep unit tests out of it.
+- `zig build test` builds each pure module as its own test target.
+- CI runs the same tests via the `unit-tests` flake check (`nix flake check`).
+- Keep side-effecting readers (`/proc`, `statfs`, sockets, HTTP) thin; test the pure parser/formatter they feed instead of mocking IO.
+- New pure module: add its file name to the `inline for` list in `build.zig`.
 
 ## Code Style
 

@@ -8,9 +8,12 @@ self:
 let
   cfg = config.services.heimdash;
 
-  configFile = (pkgs.formats.json { }).generate "heimdash.json" {
-    inherit (cfg) listen mounts services;
-  };
+  configFile = (pkgs.formats.json { }).generate "heimdash.json" (
+    {
+      inherit (cfg) listen mounts services;
+    }
+    // lib.optionalAttrs (cfg.thresholds != { }) { inherit (cfg) thresholds; }
+  );
 in
 {
   options.services.heimdash = {
@@ -73,6 +76,29 @@ in
           url = "https://cloud.lan";
         }
       ];
+    };
+
+    thresholds = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      example = {
+        cpu = {
+          warn = 70;
+          critical = 90;
+        };
+        disks = [
+          {
+            mount = "/mnt/media";
+            warn = 90;
+            critical = 97;
+          }
+        ];
+      };
+      description = ''
+        Optional metric health thresholds in percent. Keys: cpu, memory, disk,
+        and disks (per-mount overrides). Omitted fields use built-in defaults
+        (cpu 75/90, memory 80/90, disk 80/90).
+      '';
     };
   };
 
