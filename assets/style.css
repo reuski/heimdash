@@ -12,6 +12,9 @@
   --border: #332316;
   --border-strong: #9f6436;
   --led-off: #1f130b;
+  --state-checking: var(--dim);
+  --state-up: var(--accent);
+  --state-down: var(--muted);
   --scanline: rgba(255, 157, 66, 0.055);
   --scanline-dark: rgba(0, 0, 0, 0.28);
   --glow: rgba(255, 157, 66, 0.38);
@@ -419,14 +422,30 @@ ul {
 }
 
 #services li {
+  --service-state-color: var(--state-checking);
+  --service-state-glyph: "..";
+
   min-width: 0;
   min-height: 0;
 }
 
+#services li.is-up {
+  --service-state-color: var(--state-up);
+  --service-state-glyph: "UP";
+}
+
+#services li.is-down {
+  --service-state-color: var(--state-down);
+  --service-state-glyph: "DN";
+}
+
 #services a {
   position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
   align-items: end;
+  gap: var(--space-xs);
   min-width: 0;
   width: 100%;
   height: clamp(var(--tile-h), 6vw, var(--tile-max));
@@ -448,9 +467,38 @@ ul {
   position: absolute;
   top: var(--space-xs);
   left: var(--space-xs);
-  width: 1.25rem;
-  height: 0.25rem;
-  background: var(--accent-dim);
+  width: 1.5rem;
+  height: 1px;
+  background: var(--service-state-color);
+  box-shadow: 0 0 8px var(--glow-soft);
+}
+
+#services a::after {
+  content: "[" var(--service-state-glyph) "]";
+  position: absolute;
+  top: var(--space-xs);
+  right: var(--space-xs);
+  color: var(--service-state-color);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 0 8px var(--glow-soft);
+}
+
+#services .service-name {
+  grid-row: 3;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#services .service-state {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 #services a:hover,

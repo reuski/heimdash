@@ -11,12 +11,30 @@ const datastar_js = @embedFile("datastar.js");
 const Service = struct {
     name: []const u8,
     url: []const u8,
+    check: ?[]const u8 = null,
 };
 
 const Config = struct {
     listen: []const u8,
     mounts: []const []const u8,
     services: []const Service,
+};
+
+const ServiceReachability = enum { checking, up, down };
+
+const ProbeJob = struct {
+    allocator: std.mem.Allocator,
+    io: Io,
+    done: Io.Event = .unset,
+    refs: std.atomic.Value(u32) = .init(2),
+    state: ServiceReachability = .down,
+    url: []const u8,
+
+    fn release(job: *ProbeJob) void {
+        if (job.refs.fetchSub(1, .acq_rel) != 1) return;
+        job.allocator.free(job.url);
+        job.allocator.destroy(job);
+    }
 };
 
 const DiskUsage = struct { total: u64, free: u64 };
@@ -51,8 +69,13 @@ pub fn main(init: std.process.Init) !void {
             std.log.err("accept failed: {t}", .{err});
             continue;
         };
-        serveConnection(io, gpa, &cfg, stream) catch |err|
-            std.log.err("connection error: {t}", .{err});
+        const thread = std.Thread.spawn(.{}, serveConnectionThread, .{ io, gpa, &cfg, stream }) catch |err| {
+            var s = stream;
+            s.close(io);
+            std.log.err("thread spawn failed: {t}", .{err});
+            continue;
+        };
+        thread.detach();
     }
 }
 
@@ -62,6 +85,11 @@ fn parseConfigArg(args: []const [:0]const u8) ?[]const u8 {
         if (std.mem.eql(u8, args[i], "--config") and i + 1 < args.len) return args[i + 1];
     }
     return null;
+}
+
+fn serveConnectionThread(io: Io, gpa: std.mem.Allocator, cfg: *const Config, stream: net.Stream) void {
+    serveConnection(io, gpa, cfg, stream) catch |err|
+        std.log.err("connection error: {t}", .{err});
 }
 
 fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, stream: net.Stream) !void {
@@ -81,13 +109,14 @@ fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, stream: n
     var conn: http.Server = .init(&stream_reader.interface, &stream_writer.interface);
 
     var request = conn.receiveHead() catch return;
-    try route(&request, arena, io, cfg);
+    try route(&request, arena, io, gpa, cfg);
 }
 
-fn route(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config) !void {
+fn route(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config) !void {
     const target = req.head.target;
     if (std.mem.eql(u8, target, "/")) return servePage(req, arena, io, cfg);
     if (std.mem.eql(u8, target, "/poll")) return servePoll(req, arena, io, cfg);
+    if (std.mem.eql(u8, target, "/poll/services")) return servePollServices(req, arena, io, gpa, cfg);
     if (std.mem.eql(u8, target, "/style.css")) return serveAsset(req, style_css, "text/css; charset=utf-8");
     if (std.mem.eql(u8, target, "/datastar.js")) return serveAsset(req, datastar_js, "application/javascript; charset=utf-8");
     try req.respond("not found\n", .{
@@ -122,6 +151,27 @@ fn servePoll(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *
     const w = &aw.writer;
     try w.writeAll("event: datastar-patch-elements\ndata: elements ");
     try renderMetrics(w, io, cfg.mounts);
+    try w.writeAll("\n\n");
+    try req.respond(aw.written(), .{
+        .keep_alive = false,
+        .extra_headers = &.{
+            .{ .name = "content-type", .value = "text/event-stream" },
+            .{ .name = "cache-control", .value = "no-store" },
+        },
+    });
+}
+
+fn servePollServices(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config) !void {
+    const states = try arena.alloc(ServiceReachability, cfg.services.len);
+    for (cfg.services, 0..) |svc, i| {
+        states[i] = probeService(gpa, io, svc);
+    }
+
+    var aw: Io.Writer.Allocating = .init(arena);
+    defer aw.deinit();
+    const w = &aw.writer;
+    try w.writeAll("event: datastar-patch-elements\ndata: elements ");
+    try renderServices(w, cfg.services, states);
     try w.writeAll("\n\n");
     try req.respond(aw.written(), .{
         .keep_alive = false,
@@ -168,7 +218,7 @@ fn renderPage(w: *Io.Writer, io: Io, cfg: *const Config) !void {
         }
 
         if (startsWith(rest, "<ul id=\"services\"></ul>")) |n| {
-            try renderServices(w, cfg.services);
+            try renderServices(w, cfg.services, null);
             i += n;
             continue;
         }
@@ -184,16 +234,81 @@ fn startsWith(haystack: []const u8, needle: []const u8) ?usize {
     return needle.len;
 }
 
-fn renderServices(w: *Io.Writer, services: []const Service) !void {
+fn renderServices(w: *Io.Writer, services: []const Service, states: ?[]const ServiceReachability) !void {
     try w.writeAll("<ul id=\"services\">");
-    for (services) |svc| {
-        try w.writeAll("<li><a href=\"");
+    for (services, 0..) |svc, i| {
+        const state = if (states) |items| items[i] else .checking;
+        try w.writeAll("<li class=\"");
+        try w.writeAll(serviceReachabilityClass(state));
+        try w.writeAll("\"><a href=\"");
         try writeEscaped(w, svc.url);
-        try w.writeAll("\">");
+        try w.writeAll("\"><span class=\"service-name\">");
         try writeEscaped(w, svc.name);
-        try w.writeAll("</a></li>");
+        try w.writeAll("</span><span class=\"service-state\">");
+        try w.writeAll(@tagName(state));
+        try w.writeAll("</span></a></li>");
     }
     try w.writeAll("</ul>");
+}
+
+fn serviceReachabilityClass(state: ServiceReachability) []const u8 {
+    return switch (state) {
+        .checking => "is-checking",
+        .up => "is-up",
+        .down => "is-down",
+    };
+}
+
+fn probeService(gpa: std.mem.Allocator, io: Io, svc: Service) ServiceReachability {
+    const target = svc.check orelse svc.url;
+    const job = gpa.create(ProbeJob) catch return .down;
+    const url = gpa.dupe(u8, target) catch {
+        gpa.destroy(job);
+        return .down;
+    };
+    job.* = .{ .allocator = gpa, .io = io, .url = url };
+
+    const thread = std.Thread.spawn(.{}, runProbeJob, .{job}) catch {
+        job.release();
+        job.release();
+        return .down;
+    };
+    thread.detach();
+
+    const finished = if (job.done.waitTimeout(io, .{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } })) true else |_| false;
+    const state = if (finished) job.state else .down;
+    job.release();
+    return state;
+}
+
+fn runProbeJob(job: *ProbeJob) void {
+    job.state = probeUrl(job.allocator, job.io, job.url);
+    job.done.set(job.io);
+    job.release();
+}
+
+fn probeUrl(gpa: std.mem.Allocator, io: Io, url: []const u8) ServiceReachability {
+    var client: http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    const result = client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .redirect_behavior = .unhandled,
+        .keep_alive = false,
+    }) catch return .down;
+
+    return if (isReachableStatus(result.status)) .up else .down;
+}
+
+fn isReachableStatus(status: http.Status) bool {
+    return switch (status) {
+        .unauthorized, .forbidden, .not_found => true,
+        else => switch (status.class()) {
+            .success, .redirect => true,
+            else => false,
+        },
+    };
 }
 
 fn renderMetrics(w: *Io.Writer, io: Io, mounts: []const []const u8) !void {

@@ -54,6 +54,11 @@ in
               type = lib.types.str;
               description = "URL the link card opens.";
             };
+            check = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional URL to probe for reachability instead of url.";
+            };
           };
         }
       );
@@ -61,6 +66,7 @@ in
         {
           name = "Jellyfin";
           url = "http://media.lan:8096";
+          check = "http://media.lan:8096/health";
         }
         {
           name = "Nextcloud";

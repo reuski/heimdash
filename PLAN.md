@@ -8,12 +8,12 @@
 | Binary         | Single executable target                                                             |
 | Dependencies   | Zig stdlib only                                                                      |
 | Assets         | `index.html`, `style.css`, `datastar.js` embedded                                    |
-| Config         | JSON: `listen`, `mounts`, `services`                                                 |
+| Config         | JSON: `listen`, `mounts`, `services`, optional `services[].check`                    |
 | Default listen | `127.0.0.1:8080`                                                                     |
 | NixOS          | Module emits config file and hardened systemd unit                                   |
-| Runtime        | Serial accept loop                                                                   |
+| Runtime        | Detached thread per accepted connection                                              |
 | Metrics        | Hostname, uptime, CPU load, memory, disk free                                        |
-| Services       | Static link cards                                                                    |
+| Services       | Link cards with reachability states                                                  |
 | Dynamic wire   | SSE `datastar-patch-elements`                                                        |
 | Host contract  | Host agnostic; consuming flakes own hostnames, domains, ports, mounts, and inventory |
 
@@ -21,11 +21,12 @@
 
 | Method | Path           | Status            |
 | ------ | -------------- | ----------------- |
-| `GET`  | `/`            | Full HTML page    |
-| `GET`  | `/poll`        | Metrics SSE patch |
-| `GET`  | `/style.css`   | Embedded asset    |
-| `GET`  | `/datastar.js` | Embedded asset    |
-| any    | other          | `404 text/plain`  |
+| `GET`  | `/`              | Full HTML page     |
+| `GET`  | `/poll`          | Metrics SSE patch  |
+| `GET`  | `/poll/services` | Services SSE patch |
+| `GET`  | `/style.css`     | Embedded asset     |
+| `GET`  | `/datastar.js`   | Embedded asset     |
+| any    | other            | `404 text/plain`   |
 
 ## Scope
 
@@ -52,73 +53,23 @@
 
 ## Gap List
 
-- Serial accept loop blocks all requests during slow work.
-- No service reachability probes.
-- No service status morph target updates.
 - No metric health states or thresholds.
+- No module assertions for invalid dashboard config.
 - No credentials contract for read-only service APIs.
 - No service-specific summary adapters.
 - No long-lived SSE stream.
 
-## Priority 1: Service Reachability
+## Next Step Evaluation
 
-### Objective
+| Candidate                  | Value  | Cost/Risk | Decision                                           |
+| -------------------------- | ------ | --------- | -------------------------------------------------- |
+| Metric Health States       | High   | Low       | Next. Makes existing metrics actionable.           |
+| NixOS Module Guardrails    | High   | Low       | Do after thresholds so assertions cover new config. |
+| Service Summary Foundation | High   | Medium    | Split credential plumbing from service adapters.   |
+| Service Summary Adapters   | High   | High      | Build after credential contract is proven.         |
+| Long-Lived SSE             | Medium | Medium    | Defer until metrics and service patches are stable. |
 
-- Show `checking`, `up`, or `down` for every configured service.
-- Require no credentials.
-- Reuse SSE patch format.
-- Keep service links visible on first paint.
-
-### Config
-
-- Extend `Service` with optional `check`.
-- Extend Nix service submodule with optional `check`.
-- Keep existing fields unchanged: `name`, `url`.
-- Probe `check` when present.
-- Probe `url` when `check` is absent.
-
-### Runtime
-
-- Add `GET /poll/services`.
-- Return `text/event-stream`.
-- Emit one `datastar-patch-elements` event.
-- Patch `<ul id="services">...</ul>`.
-- Add `data-on-interval__duration.60s.leading="@get('/poll/services')"`.
-- Keep `/poll` at 30s for system metrics.
-- Spawn one detached thread per accepted connection before adding probes.
-- Keep one arena per request.
-- Keep probes serial inside `/poll/services`.
-
-### Probe Rules
-
-- Use `std.http.Client`.
-- Timeout: 2s per service.
-- Method: `GET`.
-- Body: discard.
-- `2xx`, `3xx`, `401`, `403`, `404`: `up`.
-- `5xx`, connect failure, timeout, malformed URL: `down`.
-- No retries.
-- No API-specific parsing.
-
-### UI
-
-- Preserve `ul#services`.
-- Add service item states: `is-checking`, `is-up`, `is-down`.
-- Add one status glyph via CSS.
-- Keep colors in `:root`.
-- No new cards.
-- No emoji.
-
-### Validation
-
-- `zig build`.
-- `zig build run -- --config /tmp/heimdash.json`.
-- `curl -i http://127.0.0.1:<port>/`.
-- `curl -i http://127.0.0.1:<port>/poll`.
-- `curl -i http://127.0.0.1:<port>/poll/services`.
-- Linux host: compare each status against direct `curl` to configured `check` or `url`.
-
-## Priority 2: Metric Health States
+## Priority 1: Metric Health States
 
 ### Objective
 
@@ -157,14 +108,39 @@
 - `/poll` returns state classes for CPU, memory, and disks.
 - Missing `/proc` data renders `unknown`, not `critical`.
 
-## Priority 3: Read-Only Service Summaries
+## Priority 2: NixOS Module Guardrails
 
 ### Objective
 
-- Add one compact operational line per service.
+- Improve deployment ergonomics without making host assumptions.
+- Catch invalid dashboard config at evaluation time.
+- Keep config additive.
+
+### Actions
+
+- Add examples for optional `check` and thresholds.
+- Add module assertions for duplicate service names.
+- Add module assertions for empty service names.
+- Add module assertions for empty service URLs.
+- Add module assertions for empty `check` URLs when present.
+- Add module assertions that warning thresholds are lower than critical thresholds.
+- Keep `services.heimdash.services = [ ]` valid.
+
+### Validation
+
+- `nix flake check` in CI.
+- Invalid module examples fail evaluation.
+- Minimal module example still evaluates.
+
+## Priority 3: Service Summary Foundation
+
+### Objective
+
+- Add safe read-only API config and credential plumbing.
 - No writes.
 - No control actions.
 - No secrets in JSON generated into the Nix store.
+- No service-specific API calls in this step.
 
 ### Config
 
@@ -191,17 +167,39 @@
 - Keep `DynamicUser = true`.
 - Zig reads credentials from `$CREDENTIALS_DIRECTORY/<name>`.
 
+### Runtime
+
+- Load credentials only when `kind` and `credential` are both present.
+- Treat missing credential files as `summary unavailable`.
+- Keep probe state separate from API summary state.
+- Keep one arena per request.
+
+### Validation
+
+- Unit-test credential path resolution.
+- Verify missing credential behavior.
+- Verify invalid credential name behavior.
+- Verify no credential value appears in generated JSON or process args.
+
+## Priority 4: Service Summary Adapters
+
+### Objective
+
+- Add one compact operational line per service.
+- Build adapters after the credential contract is proven.
+- Start with the shared `X-Api-Key` family before unique auth flows.
+
 ### Adapters
 
-| Kind             | Auth          | Read-only endpoints                                               |
-| ---------------- | ------------- | ----------------------------------------------------------------- |
-| `adguard`        | HTTP Basic    | `/control/status`, `/control/stats`                               |
-| `jellyfin`       | API key token | instance OpenAPI; first summary: server version + active sessions |
-| `sonarr`         | `X-Api-Key`   | `/api/v3/system/status`, `/api/v3/queue/status`                   |
-| `radarr`         | `X-Api-Key`   | `/api/v3/system/status`, `/api/v3/queue/status`                   |
-| `prowlarr`       | `X-Api-Key`   | `/api/v1/system/status`, indexer health/count from instance API   |
-| `qbittorrent`    | cookie login  | `/api/v2/app/version`, `/api/v2/transfer/info`                    |
-| `home_assistant` | Bearer token  | `/api/`, selected `/api/states/<entity_id>`                       |
+| Order | Kind             | Auth          | Read-only endpoints                                               |
+| ----- | ---------------- | ------------- | ----------------------------------------------------------------- |
+| 1     | `sonarr`         | `X-Api-Key`   | `/api/v3/system/status`, `/api/v3/queue/status`                   |
+| 1     | `radarr`         | `X-Api-Key`   | `/api/v3/system/status`, `/api/v3/queue/status`                   |
+| 1     | `prowlarr`       | `X-Api-Key`   | `/api/v1/system/status`, indexer health/count from instance API   |
+| 2     | `jellyfin`       | API key token | instance OpenAPI; first summary: server version + active sessions |
+| 3     | `adguard`        | HTTP Basic    | `/control/status`, `/control/stats`                               |
+| 4     | `qbittorrent`    | cookie login  | `/api/v2/app/version`, `/api/v2/transfer/info`                    |
+| 5     | `home_assistant` | Bearer token  | `/api/`, selected `/api/states/<entity_id>`                       |
 
 ### Parser Scope
 
@@ -225,7 +223,7 @@
 - Verify invalid credential behavior.
 - Verify no credential value appears in generated JSON or process args.
 
-## Priority 4: Long-Lived SSE
+## Priority 5: Long-Lived SSE
 
 ### Objective
 
@@ -249,27 +247,6 @@
 - Browser idle for 30 minutes.
 - Repeated connect/disconnect cycle does not grow memory.
 - Pull-mode endpoints still work.
-
-## Priority 5: NixOS Module Polish
-
-### Objective
-
-- Improve deployment ergonomics without making host assumptions.
-- Keep config additive.
-
-### Actions
-
-- Add examples for optional `check`, `kind`, `credential`, and thresholds.
-- Add module assertions for duplicate service names.
-- Add module assertions for empty service URLs.
-- Add module assertions for duplicate credential names.
-- Keep `services.heimdash.services = [ ]` valid.
-
-### Validation
-
-- `nix flake check` in CI.
-- Invalid module examples fail evaluation.
-- Minimal module example still evaluates.
 
 ## Out of Scope
 
