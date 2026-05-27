@@ -6,6 +6,7 @@ const http = std.http;
 
 const health = @import("health.zig");
 const format = @import("format.zig");
+const credential = @import("credential.zig");
 
 const index_html = @embedFile("index.html");
 const style_css = @embedFile("style.css");
@@ -15,6 +16,8 @@ const Service = struct {
     name: []const u8,
     url: []const u8,
     check: ?[]const u8 = null,
+    kind: ?[]const u8 = null,
+    credential: ?[]const u8 = null,
 };
 
 const Config = struct {
@@ -25,6 +28,10 @@ const Config = struct {
 };
 
 const ServiceReachability = enum { checking, up, down };
+
+const ServiceSummary = struct {
+    text: []const u8 = "",
+};
 
 const ProbeJob = struct {
     allocator: std.mem.Allocator,
@@ -59,6 +66,8 @@ pub fn main(init: std.process.Init) !void {
     const cfg = std.json.parseFromSliceLeaky(Config, arena, config_bytes, .{ .ignore_unknown_fields = true }) catch |err|
         std.process.fatal("invalid config {s}: {t}", .{ config_path, err });
 
+    const credentials_directory = init.environ_map.get("CREDENTIALS_DIRECTORY");
+
     const listen_addr = net.IpAddress.parseLiteral(cfg.listen) catch |err|
         std.process.fatal("invalid listen {s}: {t}", .{ cfg.listen, err });
 
@@ -73,7 +82,7 @@ pub fn main(init: std.process.Init) !void {
             std.log.err("accept failed: {t}", .{err});
             continue;
         };
-        const thread = std.Thread.spawn(.{}, serveConnectionThread, .{ io, gpa, &cfg, stream }) catch |err| {
+        const thread = std.Thread.spawn(.{}, serveConnectionThread, .{ io, gpa, &cfg, credentials_directory, stream }) catch |err| {
             var s = stream;
             s.close(io);
             std.log.err("thread spawn failed: {t}", .{err});
@@ -91,12 +100,12 @@ fn parseConfigArg(args: []const [:0]const u8) ?[]const u8 {
     return null;
 }
 
-fn serveConnectionThread(io: Io, gpa: std.mem.Allocator, cfg: *const Config, stream: net.Stream) void {
-    serveConnection(io, gpa, cfg, stream) catch |err|
+fn serveConnectionThread(io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8, stream: net.Stream) void {
+    serveConnection(io, gpa, cfg, credentials_directory, stream) catch |err|
         std.log.err("connection error: {t}", .{err});
 }
 
-fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, stream: net.Stream) !void {
+fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8, stream: net.Stream) !void {
     defer {
         var s = stream;
         s.close(io);
@@ -113,14 +122,14 @@ fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, stream: n
     var conn: http.Server = .init(&stream_reader.interface, &stream_writer.interface);
 
     var request = conn.receiveHead() catch return;
-    try route(&request, arena, io, gpa, cfg);
+    try route(&request, arena, io, gpa, cfg, credentials_directory);
 }
 
-fn route(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config) !void {
+fn route(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
     const path = requestPath(req.head.target);
     if (std.mem.eql(u8, path, "/")) return servePage(req, arena, io, cfg);
     if (std.mem.eql(u8, path, "/poll")) return servePoll(req, arena, io, cfg);
-    if (std.mem.eql(u8, path, "/poll/services")) return servePollServices(req, arena, io, gpa, cfg);
+    if (std.mem.eql(u8, path, "/poll/services")) return servePollServices(req, arena, io, gpa, cfg, credentials_directory);
     if (std.mem.eql(u8, path, "/style.css")) return serveAsset(req, style_css, "text/css; charset=utf-8");
     if (std.mem.eql(u8, path, "/datastar.js")) return serveAsset(req, datastar_js, "application/javascript; charset=utf-8");
     try req.respond("not found\n", .{
@@ -170,17 +179,19 @@ fn servePoll(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *
     });
 }
 
-fn servePollServices(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config) !void {
+fn servePollServices(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
     const states = try arena.alloc(ServiceReachability, cfg.services.len);
+    const summaries = try arena.alloc(ServiceSummary, cfg.services.len);
     for (cfg.services, 0..) |svc, i| {
         states[i] = probeService(gpa, io, svc);
+        summaries[i] = serviceSummary(arena, io, credentials_directory, svc);
     }
 
     var aw: Io.Writer.Allocating = .init(arena);
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll("event: datastar-patch-elements\ndata: elements ");
-    try renderServices(w, cfg.services, states);
+    try renderServices(w, cfg.services, states, summaries);
     try w.writeAll("\n\n");
     try req.respond(aw.written(), .{
         .keep_alive = false,
@@ -227,7 +238,7 @@ fn renderPage(w: *Io.Writer, io: Io, cfg: *const Config) !void {
         }
 
         if (startsWith(rest, "<ul id=\"services\"></ul>")) |n| {
-            try renderServices(w, cfg.services, null);
+            try renderServices(w, cfg.services, null, null);
             i += n;
             continue;
         }
@@ -243,16 +254,19 @@ fn startsWith(haystack: []const u8, needle: []const u8) ?usize {
     return needle.len;
 }
 
-fn renderServices(w: *Io.Writer, services: []const Service, states: ?[]const ServiceReachability) !void {
+fn renderServices(w: *Io.Writer, services: []const Service, states: ?[]const ServiceReachability, summaries: ?[]const ServiceSummary) !void {
     try w.writeAll("<ul id=\"services\">");
     for (services, 0..) |svc, i| {
         const state = if (states) |items| items[i] else .checking;
+        const summary = if (summaries) |items| items[i].text else "";
         try w.writeAll("<li class=\"");
         try w.writeAll(serviceReachabilityClass(state));
         try w.writeAll("\"><a href=\"");
         try format.escape(w, svc.url);
         try w.writeAll("\"><span class=\"service-name\">");
         try format.escape(w, svc.name);
+        try w.writeAll("</span><span class=\"service-summary\">");
+        try format.escape(w, summary);
         try w.writeAll("</span><span class=\"service-state\">");
         try w.writeAll(@tagName(state));
         try w.writeAll("</span></a></li>");
@@ -266,6 +280,19 @@ fn serviceReachabilityClass(state: ServiceReachability) []const u8 {
         .up => "is-up",
         .down => "is-down",
     };
+}
+
+fn serviceSummary(arena: std.mem.Allocator, io: Io, credentials_directory: ?[]const u8, svc: Service) ServiceSummary {
+    _ = svc.kind orelse return .{};
+    const name = svc.credential orelse return .{};
+    _ = readCredentialBytes(arena, io, credentials_directory, name) catch return .{};
+    return .{};
+}
+
+fn readCredentialBytes(arena: std.mem.Allocator, io: Io, credentials_directory: ?[]const u8, name: []const u8) ![]const u8 {
+    const directory = credentials_directory orelse return error.CredentialUnavailable;
+    const credential_path = credential.path(arena, directory, name) catch return error.CredentialUnavailable;
+    return Io.Dir.cwd().readFileAlloc(io, credential_path, arena, .limited(64 * 1024)) catch return error.CredentialUnavailable;
 }
 
 fn probeService(gpa: std.mem.Allocator, io: Io, svc: Service) ServiceReachability {

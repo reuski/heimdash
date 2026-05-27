@@ -33,7 +33,12 @@ No local Nix requirement in this workspace. CI is the canonical Nix check.
       "check": "http://adguard.example.invalid/login.html"
     },
     { "name": "Jellyfin", "url": "http://jellyfin.example.invalid" },
-    { "name": "Sonarr", "url": "http://sonarr.example.invalid" },
+    {
+      "name": "Sonarr",
+      "url": "http://sonarr.example.invalid",
+      "kind": "sonarr",
+      "credential": "sonarr-api-key"
+    },
     { "name": "Radarr", "url": "http://radarr.example.invalid" },
     { "name": "Prowlarr", "url": "http://prowlarr.example.invalid" },
     { "name": "qBittorrent", "url": "http://qbittorrent.example.invalid" },
@@ -51,6 +56,10 @@ No local Nix requirement in this workspace. CI is the canonical Nix check.
 `thresholds` is optional. Each metric row reports `ok`, `warn`, `critical`, or
 `unknown` against these percent limits; omitted fields fall back to the built-in
 defaults shown above, and `disks` entries override the shared disk limit per mount.
+
+Service `kind` and `credential` are optional. `kind` selects future read-only
+summary support, while `credential` is only the systemd credential name. Secret
+values and credential source paths stay outside generated JSON.
 
 ## NixOS Module
 
@@ -74,12 +83,18 @@ defaults shown above, and `disks` entries override the shared disk limit per mou
                 check = "http://adguard.example.invalid/login.html";
               }
               { name = "Jellyfin"; url = "http://jellyfin.example.invalid"; }
-              { name = "Sonarr"; url = "http://sonarr.example.invalid"; }
+              {
+                name = "Sonarr";
+                url = "http://sonarr.example.invalid";
+                kind = "sonarr";
+                credential = "sonarr-api-key";
+              }
               { name = "Radarr"; url = "http://radarr.example.invalid"; }
               { name = "Prowlarr"; url = "http://prowlarr.example.invalid"; }
               { name = "qBittorrent"; url = "http://qbittorrent.example.invalid"; }
               { name = "Home Assistant"; url = "http://home-assistant.example.invalid"; }
             ];
+            credentials.sonarr-api-key.path = "/run/secrets/sonarr-api-key";
           };
         }
       ];
@@ -87,6 +102,10 @@ defaults shown above, and `disks` entries override the shared disk limit per mou
   };
 }
 ```
+
+`credentials.<name>.path` is emitted as a systemd `LoadCredential` entry. The
+generated JSON contains service metadata such as `"credential": "sonarr-api-key"`,
+but never the credential source path or secret value.
 
 ## Routes
 

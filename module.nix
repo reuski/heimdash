@@ -48,6 +48,14 @@ let
 
   serviceNames = map (service: service.name) cfg.services;
   nonEmptyServiceNames = lib.filter (name: name != "") serviceNames;
+  credentialNames = lib.attrNames cfg.credentials;
+  referencedCredentialNames = lib.filter (name: name != null) (
+    map (service: service.credential) cfg.services
+  );
+  credentialNameIsSafe = name: name != "" && builtins.match ".*[/:].*" name == null;
+  referencedCredentialsExist = lib.all (name: lib.hasAttr name cfg.credentials) referencedCredentialNames;
+  credentialNamesAreSafe = lib.all credentialNameIsSafe credentialNames;
+  credentialPathsAreSet = lib.all (name: cfg.credentials.${name}.path != "") credentialNames;
   thresholdIsOrdered = threshold: threshold.warn < threshold.critical;
   thresholdsAreOrdered =
     cfg.thresholds == null
@@ -112,6 +120,16 @@ in
               default = null;
               description = "Optional URL to probe for reachability instead of url.";
             };
+            kind = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional service kind used to select read-only summaries.";
+            };
+            credential = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional systemd credential name for read-only summaries.";
+            };
           };
         }
       );
@@ -126,6 +144,24 @@ in
           url = "https://cloud.lan";
         }
       ];
+    };
+
+    credentials = lib.mkOption {
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options = {
+            path = lib.mkOption {
+              type = lib.types.str;
+              description = "Path to the source file loaded as this systemd credential.";
+            };
+          };
+        }
+      );
+      default = { };
+      description = "Systemd credentials available to service summary adapters.";
+      example = {
+        sonarr-api-key.path = "/run/secrets/sonarr-api-key";
+      };
     };
 
     thresholds = lib.mkOption {
@@ -196,6 +232,26 @@ in
         message = "services.heimdash.services entries with check set must use a non-empty check URL.";
       }
       {
+        assertion = lib.all (service: service.kind == null || service.kind != "") cfg.services;
+        message = "services.heimdash.services entries with kind set must use a non-empty kind.";
+      }
+      {
+        assertion = lib.all (service: service.credential == null || service.credential != "") cfg.services;
+        message = "services.heimdash.services entries with credential set must use a non-empty credential name.";
+      }
+      {
+        assertion = credentialNamesAreSafe;
+        message = "services.heimdash.credentials names must be non-empty and must not contain '/' or ':'.";
+      }
+      {
+        assertion = referencedCredentialsExist;
+        message = "services.heimdash.services credential values must reference services.heimdash.credentials entries.";
+      }
+      {
+        assertion = credentialPathsAreSet;
+        message = "services.heimdash.credentials paths must be non-empty.";
+      }
+      {
         assertion = thresholdsAreOrdered;
         message = "services.heimdash.thresholds warn values must be lower than critical values.";
       }
@@ -208,6 +264,7 @@ in
 
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} --config ${configFile}";
+        LoadCredential = lib.mapAttrsToList (name: value: "${name}:${value.path}") cfg.credentials;
         Restart = "on-failure";
         RestartSec = 5;
 
