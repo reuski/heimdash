@@ -8,6 +8,7 @@ const health = @import("health.zig");
 const format = @import("format.zig");
 const credential = @import("credential.zig");
 const summary = @import("summary.zig");
+const render = @import("render.zig");
 
 const index_html = @embedFile("index.html");
 const style_css = @embedFile("style.css");
@@ -29,18 +30,12 @@ const Config = struct {
     thresholds: health.Config = .{},
 };
 
-const ServiceReachability = enum { checking, up, down };
-
-const ServiceSummary = struct {
-    text: []const u8 = "",
-};
-
 const ProbeJob = struct {
     allocator: std.mem.Allocator,
     io: Io,
     done: Io.Event = .unset,
     refs: std.atomic.Value(u32) = .init(2),
-    state: ServiceReachability = .down,
+    state: render.ServiceReachability = .down,
     url: []const u8,
 
     fn release(job: *ProbeJob) void {
@@ -71,9 +66,6 @@ const SummaryJob = struct {
         job.allocator.destroy(job);
     }
 };
-
-const DiskUsage = struct { total: u64, free: u64 };
-const MemInfo = struct { total: u64, available: u64 };
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -178,9 +170,22 @@ fn serveAsset(req: *http.Server.Request, body: []const u8, ctype: []const u8) !v
 }
 
 fn servePage(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config) !void {
+    var hostname_buf: [256]u8 = undefined;
+    const hostname = readHostname(io, &hostname_buf) catch "unknown";
+
+    var uptime_buf: [64]u8 = undefined;
+    const uptime_text = format.uptime(&uptime_buf, readUptime(io) catch 0);
+
+    const metric_data = try collectMetrics(arena, io, cfg);
+    const service_items = try serviceCards(arena, cfg.services);
     var aw: Io.Writer.Allocating = .init(arena);
     defer aw.deinit();
-    try renderPage(&aw.writer, io, cfg);
+    try render.page(&aw.writer, index_html, .{
+        .hostname = hostname,
+        .uptime = uptime_text,
+        .metrics = metric_data,
+        .services = .{ .items = service_items },
+    });
     try req.respond(aw.written(), .{
         .keep_alive = false,
         .extra_headers = &.{.{ .name = "content-type", .value = "text/html; charset=utf-8" }},
@@ -188,11 +193,12 @@ fn servePage(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *
 }
 
 fn servePoll(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config) !void {
+    const metric_data = try collectMetrics(arena, io, cfg);
     var aw: Io.Writer.Allocating = .init(arena);
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll("event: datastar-patch-elements\ndata: elements ");
-    try renderMetrics(w, io, cfg);
+    try render.metrics(w, metric_data);
     try w.writeAll("\n\n");
     try req.respond(aw.written(), .{
         .keep_alive = false,
@@ -204,18 +210,19 @@ fn servePoll(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *
 }
 
 fn servePollServices(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
-    const states = try arena.alloc(ServiceReachability, cfg.services.len);
-    const summaries = try arena.alloc(ServiceSummary, cfg.services.len);
+    const states = try arena.alloc(render.ServiceReachability, cfg.services.len);
+    const summaries = try arena.alloc(render.ServiceSummary, cfg.services.len);
     for (cfg.services, 0..) |svc, i| {
         states[i] = probeService(gpa, io, svc);
         summaries[i] = serviceSummary(arena, io, gpa, credentials_directory, svc);
     }
+    const service_items = try serviceCards(arena, cfg.services);
 
     var aw: Io.Writer.Allocating = .init(arena);
     defer aw.deinit();
     const w = &aw.writer;
     try w.writeAll("event: datastar-patch-elements\ndata: elements ");
-    try renderServices(w, cfg.services, states, summaries);
+    try render.services(w, .{ .items = service_items, .states = states, .summaries = summaries });
     try w.writeAll("\n\n");
     try req.respond(aw.written(), .{
         .keep_alive = false,
@@ -226,87 +233,13 @@ fn servePollServices(req: *http.Server.Request, arena: std.mem.Allocator, io: Io
     });
 }
 
-fn renderPage(w: *Io.Writer, io: Io, cfg: *const Config) !void {
-    var hostname_buf: [256]u8 = undefined;
-    const hostname = readHostname(io, &hostname_buf) catch "unknown";
-
-    var uptime_buf: [64]u8 = undefined;
-    const uptime_text = format.uptime(&uptime_buf, readUptime(io) catch 0);
-
-    var i: usize = 0;
-    while (i < index_html.len) {
-        const rest = index_html[i..];
-
-        if (startsWith(rest, "<h1>heimdash</h1>")) |n| {
-            try w.writeAll("<h1>");
-            try format.escape(w, hostname);
-            try w.writeAll("</h1>");
-            i += n;
-            continue;
-        }
-
-        if (startsWith(rest, "<span id=\"uptime\"></span>")) |n| {
-            try w.writeAll("<span id=\"uptime\">");
-            try format.escape(w, uptime_text);
-            try w.writeAll("</span>");
-            i += n;
-            continue;
-        }
-
-        if (startsWith(rest, "<section id=\"metrics\">")) |_| {
-            const end_tag = "</section>";
-            const end = std.mem.indexOfPos(u8, index_html, i, end_tag) orelse return error.InvalidIndexHtml;
-            try renderMetrics(w, io, cfg);
-            i = end + end_tag.len;
-            continue;
-        }
-
-        if (startsWith(rest, "<ul id=\"services\"></ul>")) |n| {
-            try renderServices(w, cfg.services, null, null);
-            i += n;
-            continue;
-        }
-
-        try w.writeByte(index_html[i]);
-        i += 1;
-    }
+fn serviceCards(arena: std.mem.Allocator, services: []const Service) ![]const render.ServiceCard {
+    const cards = try arena.alloc(render.ServiceCard, services.len);
+    for (services, 0..) |svc, i| cards[i] = .{ .name = svc.name, .url = svc.url };
+    return cards;
 }
 
-fn startsWith(haystack: []const u8, needle: []const u8) ?usize {
-    if (haystack.len < needle.len) return null;
-    if (!std.mem.eql(u8, haystack[0..needle.len], needle)) return null;
-    return needle.len;
-}
-
-fn renderServices(w: *Io.Writer, services: []const Service, states: ?[]const ServiceReachability, summaries: ?[]const ServiceSummary) !void {
-    try w.writeAll("<ul id=\"services\">");
-    for (services, 0..) |svc, i| {
-        const state = if (states) |items| items[i] else .checking;
-        const summary_text = if (summaries) |items| items[i].text else "";
-        try w.writeAll("<li class=\"");
-        try w.writeAll(serviceReachabilityClass(state));
-        try w.writeAll("\"><a href=\"");
-        try format.escape(w, svc.url);
-        try w.writeAll("\"><span class=\"service-name\">");
-        try format.escape(w, svc.name);
-        try w.writeAll("</span><span class=\"service-summary\">");
-        try format.escape(w, summary_text);
-        try w.writeAll("</span><span class=\"service-state\">");
-        try w.writeAll(@tagName(state));
-        try w.writeAll("</span></a></li>");
-    }
-    try w.writeAll("</ul>");
-}
-
-fn serviceReachabilityClass(state: ServiceReachability) []const u8 {
-    return switch (state) {
-        .checking => "is-checking",
-        .up => "is-up",
-        .down => "is-down",
-    };
-}
-
-fn serviceSummary(arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, credentials_directory: ?[]const u8, svc: Service) ServiceSummary {
+fn serviceSummary(arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, credentials_directory: ?[]const u8, svc: Service) render.ServiceSummary {
     const adapter = summary.adapterForKind(svc.kind orelse return .{}) orelse return .{};
     if (adapter == .home_assistant and svc.entity == null) return .{};
     const name = svc.credential orelse return .{};
@@ -321,7 +254,7 @@ fn readCredentialBytes(arena: std.mem.Allocator, io: Io, credentials_directory: 
     return Io.Dir.cwd().readFileAlloc(io, credential_path, arena, .limited(64 * 1024)) catch return error.CredentialUnavailable;
 }
 
-fn fetchSummaryWithTimeout(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: []const u8, entity: ?[]const u8) ServiceSummary {
+fn fetchSummaryWithTimeout(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: []const u8, entity: ?[]const u8) render.ServiceSummary {
     const job = gpa.create(SummaryJob) catch return .{};
     const url = gpa.dupe(u8, base_url) catch {
         gpa.destroy(job);
@@ -527,7 +460,7 @@ fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []const
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ root, path });
 }
 
-fn probeService(gpa: std.mem.Allocator, io: Io, svc: Service) ServiceReachability {
+fn probeService(gpa: std.mem.Allocator, io: Io, svc: Service) render.ServiceReachability {
     const target = svc.check orelse svc.url;
     const job = gpa.create(ProbeJob) catch return .down;
     const url = gpa.dupe(u8, target) catch {
@@ -555,7 +488,7 @@ fn runProbeJob(job: *ProbeJob) void {
     job.release();
 }
 
-fn probeUrl(gpa: std.mem.Allocator, io: Io, url: []const u8) ServiceReachability {
+fn probeUrl(gpa: std.mem.Allocator, io: Io, url: []const u8) render.ServiceReachability {
     var client: http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
 
@@ -579,58 +512,59 @@ fn isReachableStatus(status: http.Status) bool {
     };
 }
 
-fn renderMetrics(w: *Io.Writer, io: Io, cfg: *const Config) !void {
+fn collectMetrics(arena: std.mem.Allocator, io: Io, cfg: *const Config) !render.Metrics {
     const t = cfg.thresholds;
-    try w.writeAll("<section id=\"metrics\"><h2>System</h2><ul id=\"system\">");
 
     const load_opt: ?f64 = readLoadAvg(io) catch null;
     const ncpu = std.Thread.getCpuCount() catch 1;
-    var cbuf: [32]u8 = undefined;
     const cpu_pct: ?u64 = if (load_opt) |load|
         @min(100, @as(u64, @intFromFloat(load / @as(f64, @floatFromInt(ncpu)) * 100.0)))
     else
         null;
     const cpu_detail = if (load_opt) |load|
-        std.fmt.bufPrint(&cbuf, "load {d:.2}", .{load}) catch "?"
+        try std.fmt.allocPrint(arena, "load {d:.2}", .{load})
     else
         "load --";
-    try renderBarRow(w, "CPU", cpu_pct, cpu_detail, health.classify(cpu_pct, t.cpu));
+    const cpu: render.MetricRow = .{
+        .label = "CPU",
+        .percent = cpu_pct,
+        .detail = cpu_detail,
+        .state = health.classify(cpu_pct, t.cpu),
+    };
 
-    const mem = readMemInfo(io) catch MemInfo{ .total = 0, .available = 0 };
+    const mem = readMemInfo(io) catch render.MemInfo{ .total = 0, .available = 0 };
     const mem_used = if (mem.total > mem.available) mem.total - mem.available else 0;
     const mem_pct: ?u64 = if (mem.total == 0) null else @min(100, mem_used * 100 / mem.total);
     var mfb: [32]u8 = undefined;
-    var mdb: [48]u8 = undefined;
     const mem_detail = if (mem.total == 0)
         "-- free"
     else
-        std.fmt.bufPrint(&mdb, "{s} free", .{format.bytes(&mfb, mem.available)}) catch "?";
-    try renderBarRow(w, "Memory", mem_pct, mem_detail, health.classify(mem_pct, t.memory));
+        try std.fmt.allocPrint(arena, "{s} free", .{format.bytes(&mfb, mem.available)});
+    const memory: render.MetricRow = .{
+        .label = "Memory",
+        .percent = mem_pct,
+        .detail = mem_detail,
+        .state = health.classify(mem_pct, t.memory),
+    };
 
-    try w.writeAll("</ul><h2>Disks</h2><ul id=\"disks\">");
-    for (cfg.mounts) |mnt| {
-        const fs = readDiskFree(mnt) catch DiskUsage{ .total = 0, .free = 0 };
+    const disks = try arena.alloc(render.MetricRow, cfg.mounts.len);
+    for (cfg.mounts, 0..) |mnt, i| {
+        const fs = readDiskFree(mnt) catch render.DiskUsage{ .total = 0, .free = 0 };
         const used = if (fs.total > fs.free) fs.total - fs.free else 0;
         const pct: ?u64 = if (fs.total == 0) null else @min(100, used * 100 / fs.total);
         var fbuf: [32]u8 = undefined;
-        var dbuf: [48]u8 = undefined;
         const detail = if (fs.total == 0)
             "-- free"
         else
-            std.fmt.bufPrint(&dbuf, "{s} free", .{format.bytes(&fbuf, fs.free)}) catch "?";
-        try renderBarRow(w, mnt, pct, detail, health.classify(pct, health.diskThresholdFor(t, mnt)));
+            try std.fmt.allocPrint(arena, "{s} free", .{format.bytes(&fbuf, fs.free)});
+        disks[i] = .{
+            .label = mnt,
+            .percent = pct,
+            .detail = detail,
+            .state = health.classify(pct, health.diskThresholdFor(t, mnt)),
+        };
     }
-    try w.writeAll("</ul></section>");
-}
-
-fn renderBarRow(w: *Io.Writer, label: []const u8, pct: ?u64, detail: []const u8, state: health.State) !void {
-    try w.writeAll("<li class=\"");
-    try w.writeAll(health.cssClass(state));
-    try w.writeAll("\"><span class=\"label\">");
-    try format.escape(w, label);
-    try w.print("</span><span class=\"bar\"><span style=\"width:{d}%\"></span></span><span class=\"free\">", .{pct orelse 0});
-    try format.escape(w, detail);
-    try w.writeAll("</span></li>");
+    return .{ .cpu = cpu, .memory = memory, .disks = disks };
 }
 
 fn readHostname(io: Io, buf: []u8) ![]const u8 {
@@ -664,7 +598,7 @@ fn readLoadAvg(io: Io) !f64 {
     return std.fmt.parseFloat(f64, text[0..space]);
 }
 
-fn readMemInfo(io: Io) !MemInfo {
+fn readMemInfo(io: Io) !render.MemInfo {
     var buf: [4096]u8 = undefined;
     var file = try Io.Dir.openFileAbsolute(io, "/proc/meminfo", .{});
     defer file.close(io);
@@ -677,7 +611,7 @@ fn readMemInfo(io: Io) !MemInfo {
     };
 }
 
-fn readDiskFree(path: []const u8) !DiskUsage {
+fn readDiskFree(path: []const u8) !render.DiskUsage {
     if (builtin.os.tag != .linux) return .{ .total = 0, .free = 0 };
 
     const linux = std.os.linux;
