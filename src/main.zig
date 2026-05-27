@@ -30,42 +30,33 @@ const Config = struct {
     thresholds: health.Config = .{},
 };
 
-const ProbeJob = struct {
-    allocator: std.mem.Allocator,
-    io: Io,
-    done: Io.Event = .unset,
-    refs: std.atomic.Value(u32) = .init(2),
-    state: render.ServiceReachability = .down,
-    url: []const u8,
+const probe_timeout_seconds = 2;
+const summary_timeout_seconds = 2;
 
-    fn release(job: *ProbeJob) void {
-        if (job.refs.fetchSub(1, .acq_rel) != 1) return;
-        job.allocator.free(job.url);
-        job.allocator.destroy(job);
-    }
-};
+/// Runs `func` concurrently with a timer and returns whichever finishes first:
+/// the function's result, or `null` once `seconds` elapse. The loser is
+/// canceled, which interrupts an in-flight fetch at its next syscall and
+/// guarantees the worker is finished before this returns, so `func` may borrow
+/// the caller's memory.
+fn within(io: Io, seconds: i64, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) ?@typeInfo(@TypeOf(func)).@"fn".return_type.? {
+    const Result = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
+    const Race = union(enum) { value: Result, expired: void };
+    var buffer: [2]Race = undefined;
+    var race: Io.Select(Race) = .init(io, &buffer);
+    defer race.cancelDiscard();
 
-const SummaryJob = struct {
-    allocator: std.mem.Allocator,
-    io: Io,
-    done: Io.Event = .unset,
-    refs: std.atomic.Value(u32) = .init(2),
-    adapter: summary.Adapter,
-    base_url: []u8,
-    credential_value: []u8,
-    entity: ?[]u8 = null,
-    text: ?[]u8 = null,
+    race.concurrent(.value, func, args) catch return @call(.auto, func, args);
+    race.concurrent(.expired, expire, .{ io, seconds }) catch {};
 
-    fn release(job: *SummaryJob) void {
-        if (job.refs.fetchSub(1, .acq_rel) != 1) return;
-        job.allocator.free(job.base_url);
-        @memset(job.credential_value, 0);
-        job.allocator.free(job.credential_value);
-        if (job.entity) |entity| job.allocator.free(entity);
-        if (job.text) |text| job.allocator.free(text);
-        job.allocator.destroy(job);
-    }
-};
+    return switch (race.await() catch return null) {
+        .value => |value| value,
+        .expired => null,
+    };
+}
+
+fn expire(io: Io, seconds: i64) void {
+    Io.sleep(io, .fromSeconds(seconds), .awake) catch {};
+}
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -209,33 +200,22 @@ fn serveStream(req: *http.Server.Request, request_arena: *std.heap.ArenaAllocato
     });
     if (method == .HEAD) return body.end();
 
-    writeHeartbeat(&body) catch return;
-    writeStreamMetrics(&body, request_arena, io, cfg) catch |err| {
-        if (err == error.WriteFailed) return;
-        return err;
-    };
-    writeStreamServices(&body, request_arena, io, gpa, cfg, credentials_directory) catch |err| {
-        if (err == error.WriteFailed) return;
-        return err;
-    };
+    runStream(&body, request_arena, io, gpa, cfg, credentials_directory) catch |err|
+        if (err != error.WriteFailed) return err;
+}
+
+fn runStream(body: *http.BodyWriter, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
+    try writeHeartbeat(body);
+    try writeStreamMetrics(body, request_arena, io, cfg);
+    try writeStreamServices(body, request_arena, io, gpa, cfg, credentials_directory);
 
     var ticks: u64 = 0;
     while (true) {
         Io.sleep(io, .fromSeconds(stream_tick_seconds), .awake) catch return;
         ticks += 1;
-        writeHeartbeat(&body) catch return;
-        if (ticks % stream_metrics_every_ticks == 0) {
-            writeStreamMetrics(&body, request_arena, io, cfg) catch |err| {
-                if (err == error.WriteFailed) return;
-                return err;
-            };
-        }
-        if (ticks % stream_services_every_ticks == 0) {
-            writeStreamServices(&body, request_arena, io, gpa, cfg, credentials_directory) catch |err| {
-                if (err == error.WriteFailed) return;
-                return err;
-            };
-        }
+        try writeHeartbeat(body);
+        if (ticks % stream_metrics_every_ticks == 0) try writeStreamMetrics(body, request_arena, io, cfg);
+        if (ticks % stream_services_every_ticks == 0) try writeStreamServices(body, request_arena, io, gpa, cfg, credentials_directory);
     }
 }
 
@@ -301,7 +281,7 @@ fn serviceSummary(arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cred
     const name = svc.credential orelse return .{};
     const credential_bytes = readCredentialBytes(arena, io, credentials_directory, name) catch return .{};
     const credential_value = summary.credentialHeaderValue(credential_bytes) orelse return .{};
-    return fetchSummaryWithTimeout(arena, gpa, io, adapter, svc.url, credential_value, svc.entity);
+    return within(io, summary_timeout_seconds, summaryText, .{ arena, gpa, io, adapter, svc.url, credential_value, svc.entity }) orelse .{};
 }
 
 fn readCredentialBytes(arena: std.mem.Allocator, io: Io, credentials_directory: ?[]const u8, name: []const u8) ![]const u8 {
@@ -310,74 +290,15 @@ fn readCredentialBytes(arena: std.mem.Allocator, io: Io, credentials_directory: 
     return Io.Dir.cwd().readFileAlloc(io, credential_path, arena, .limited(64 * 1024)) catch return error.CredentialUnavailable;
 }
 
-fn fetchSummaryWithTimeout(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: []const u8, entity: ?[]const u8) render.ServiceSummary {
-    const job = gpa.create(SummaryJob) catch return .{};
-    const url = gpa.dupe(u8, base_url) catch {
-        gpa.destroy(job);
-        return .{};
-    };
-    const secret = gpa.dupe(u8, credential_value) catch {
-        gpa.free(url);
-        gpa.destroy(job);
-        return .{};
-    };
-    const entity_copy = if (entity) |value| gpa.dupe(u8, value) catch {
-        @memset(secret, 0);
-        gpa.free(secret);
-        gpa.free(url);
-        gpa.destroy(job);
-        return .{};
-    } else null;
-    job.* = .{
-        .allocator = gpa,
-        .io = io,
-        .adapter = adapter,
-        .base_url = url,
-        .credential_value = secret,
-        .entity = entity_copy,
-    };
-
-    const thread = std.Thread.spawn(.{}, runSummaryJob, .{job}) catch {
-        job.release();
-        job.release();
-        return .{};
-    };
-    thread.detach();
-
-    const finished = if (job.done.waitTimeout(io, .{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } })) true else |_| false;
-    if (!finished) {
-        job.release();
-        return .{};
-    }
-
-    const text = job.text orelse {
-        job.release();
-        return .{};
-    };
-    const owned_text = arena.dupe(u8, text) catch {
-        job.release();
-        return .{};
-    };
-    job.release();
-    return .{ .text = owned_text };
-}
-
-fn runSummaryJob(job: *SummaryJob) void {
-    job.text = fetchSummaryText(job.allocator, job.io, job.adapter, job.base_url, job.credential_value, job.entity) catch null;
-    job.done.set(job.io);
-    job.release();
-}
-
-fn fetchSummaryText(gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: []const u8, entity: ?[]const u8) ![]u8 {
+fn summaryText(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: []const u8, entity: ?[]const u8) render.ServiceSummary {
     var parse_arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer parse_arena_state.deinit();
     const parse_arena = parse_arena_state.allocator();
 
-    const value = try fetchSummaryValue(gpa, parse_arena, io, adapter, base_url, credential_value, entity);
-    var aw: Io.Writer.Allocating = .init(gpa);
-    errdefer aw.deinit();
-    try value.write(&aw.writer);
-    return try aw.toOwnedSlice();
+    const value = fetchSummaryValue(gpa, parse_arena, io, adapter, base_url, credential_value, entity) catch return .{};
+    var aw: Io.Writer.Allocating = .init(arena);
+    value.write(&aw.writer) catch return .{};
+    return .{ .text = aw.written() };
 }
 
 fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: []const u8, entity: ?[]const u8) !summary.Value {
@@ -517,31 +438,7 @@ fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []const
 }
 
 fn probeService(gpa: std.mem.Allocator, io: Io, svc: Service) render.ServiceReachability {
-    const target = svc.check orelse svc.url;
-    const job = gpa.create(ProbeJob) catch return .down;
-    const url = gpa.dupe(u8, target) catch {
-        gpa.destroy(job);
-        return .down;
-    };
-    job.* = .{ .allocator = gpa, .io = io, .url = url };
-
-    const thread = std.Thread.spawn(.{}, runProbeJob, .{job}) catch {
-        job.release();
-        job.release();
-        return .down;
-    };
-    thread.detach();
-
-    const finished = if (job.done.waitTimeout(io, .{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } })) true else |_| false;
-    const state = if (finished) job.state else .down;
-    job.release();
-    return state;
-}
-
-fn runProbeJob(job: *ProbeJob) void {
-    job.state = probeUrl(job.allocator, job.io, job.url);
-    job.done.set(job.io);
-    job.release();
+    return within(io, probe_timeout_seconds, probeUrl, .{ gpa, io, svc.check orelse svc.url }) orelse .down;
 }
 
 fn probeUrl(gpa: std.mem.Allocator, io: Io, url: []const u8) render.ServiceReachability {
@@ -589,55 +486,42 @@ fn collectMetrics(arena: std.mem.Allocator, io: Io, cfg: *const Config) !render.
     };
 
     const mem = readMemInfo(io) catch render.MemInfo{ .total = 0, .available = 0 };
-    const mem_used = if (mem.total > mem.available) mem.total - mem.available else 0;
-    const mem_pct: ?u64 = if (mem.total == 0) null else @min(100, mem_used * 100 / mem.total);
-    var mfb: [32]u8 = undefined;
-    const mem_detail = if (mem.total == 0)
-        "-- free"
-    else
-        try std.fmt.allocPrint(arena, "{s} free", .{format.bytes(&mfb, mem.available)});
-    const memory: render.MetricRow = .{
-        .label = "Memory",
-        .percent = mem_pct,
-        .detail = mem_detail,
-        .state = health.classify(mem_pct, t.memory),
-    };
+    const memory = try usageRow(arena, "Memory", mem.total, mem.available, t.memory);
 
     const disks = try arena.alloc(render.MetricRow, cfg.mounts.len);
     for (cfg.mounts, 0..) |mnt, i| {
         const fs = readDiskFree(mnt) catch render.DiskUsage{ .total = 0, .free = 0 };
-        const used = if (fs.total > fs.free) fs.total - fs.free else 0;
-        const pct: ?u64 = if (fs.total == 0) null else @min(100, used * 100 / fs.total);
-        var fbuf: [32]u8 = undefined;
-        const detail = if (fs.total == 0)
-            "-- free"
-        else
-            try std.fmt.allocPrint(arena, "{s} free", .{format.bytes(&fbuf, fs.free)});
-        disks[i] = .{
-            .label = mnt,
-            .percent = pct,
-            .detail = detail,
-            .state = health.classify(pct, health.diskThresholdFor(t, mnt)),
-        };
+        disks[i] = try usageRow(arena, mnt, fs.total, fs.free, health.diskThresholdFor(t, mnt));
     }
     return .{ .cpu = cpu, .memory = memory, .disks = disks };
 }
 
-fn readHostname(io: Io, buf: []u8) ![]const u8 {
-    var file = try Io.Dir.openFileAbsolute(io, "/etc/hostname", .{});
+fn usageRow(arena: std.mem.Allocator, label: []const u8, total: u64, free: u64, thresholds: health.Thresholds) !render.MetricRow {
+    const used = if (total > free) total - free else 0;
+    const pct: ?u64 = if (total == 0) null else @min(100, used * 100 / total);
+    var buf: [32]u8 = undefined;
+    const detail = if (total == 0)
+        "-- free"
+    else
+        try std.fmt.allocPrint(arena, "{s} free", .{format.bytes(&buf, free)});
+    return .{ .label = label, .percent = pct, .detail = detail, .state = health.classify(pct, thresholds) };
+}
+
+fn readSmall(io: Io, path: []const u8, buf: []u8) ![]const u8 {
+    var file = try Io.Dir.openFileAbsolute(io, path, .{});
     defer file.close(io);
     var fr = file.reader(io, &.{});
     const n = try fr.interface.readSliceShort(buf);
-    return std.mem.trim(u8, buf[0..n], " \t\r\n");
+    return buf[0..n];
+}
+
+fn readHostname(io: Io, buf: []u8) ![]const u8 {
+    return std.mem.trim(u8, try readSmall(io, "/etc/hostname", buf), " \t\r\n");
 }
 
 fn readUptime(io: Io) !u64 {
     var buf: [128]u8 = undefined;
-    var file = try Io.Dir.openFileAbsolute(io, "/proc/uptime", .{});
-    defer file.close(io);
-    var fr = file.reader(io, &.{});
-    const n = try fr.interface.readSliceShort(&buf);
-    const text = buf[0..n];
+    const text = try readSmall(io, "/proc/uptime", &buf);
     const space = std.mem.indexOfScalar(u8, text, ' ') orelse text.len;
     const dot = std.mem.indexOfScalar(u8, text[0..space], '.') orelse space;
     return std.fmt.parseInt(u64, text[0..dot], 10) catch 0;
@@ -645,22 +529,14 @@ fn readUptime(io: Io) !u64 {
 
 fn readLoadAvg(io: Io) !f64 {
     var buf: [128]u8 = undefined;
-    var file = try Io.Dir.openFileAbsolute(io, "/proc/loadavg", .{});
-    defer file.close(io);
-    var fr = file.reader(io, &.{});
-    const n = try fr.interface.readSliceShort(&buf);
-    const text = buf[0..n];
+    const text = try readSmall(io, "/proc/loadavg", &buf);
     const space = std.mem.indexOfScalar(u8, text, ' ') orelse return error.BadLoadAvg;
     return std.fmt.parseFloat(f64, text[0..space]);
 }
 
 fn readMemInfo(io: Io) !render.MemInfo {
     var buf: [4096]u8 = undefined;
-    var file = try Io.Dir.openFileAbsolute(io, "/proc/meminfo", .{});
-    defer file.close(io);
-    var fr = file.reader(io, &.{});
-    const n = try fr.interface.readSliceShort(&buf);
-    const text = buf[0..n];
+    const text = try readSmall(io, "/proc/meminfo", &buf);
     return .{
         .total = format.parseMemKb(text, "MemTotal:") * 1024,
         .available = format.parseMemKb(text, "MemAvailable:") * 1024,

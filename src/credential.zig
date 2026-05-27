@@ -5,27 +5,22 @@ pub const Error = error{
     UnsafeName,
 };
 
-pub fn isValidName(name: []const u8) bool {
-    return validateName(name) == null;
-}
-
-pub fn validateName(name: []const u8) ?Error {
+pub fn validateName(name: []const u8) Error!void {
     if (name.len == 0) return error.EmptyName;
     if (std.mem.indexOfAny(u8, name, "/:") != null) return error.UnsafeName;
-    return null;
 }
 
 pub fn path(allocator: std.mem.Allocator, directory: []const u8, name: []const u8) ![]u8 {
-    if (validateName(name)) |err| return err;
+    try validateName(name);
     return std.fs.path.join(allocator, &.{ directory, name });
 }
 
 test "credential names reject empty and systemd separator bytes" {
-    try std.testing.expect(isValidName("sonarr-api-key"));
-    try std.testing.expect(isValidName("jellyfin_token"));
-    try std.testing.expect(!isValidName(""));
-    try std.testing.expect(!isValidName("sonarr/key"));
-    try std.testing.expect(!isValidName("sonarr:key"));
+    try validateName("sonarr-api-key");
+    try validateName("jellyfin_token");
+    try std.testing.expectError(error.EmptyName, validateName(""));
+    try std.testing.expectError(error.UnsafeName, validateName("sonarr/key"));
+    try std.testing.expectError(error.UnsafeName, validateName("sonarr:key"));
 }
 
 test "credential path joins directory and safe name" {

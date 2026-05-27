@@ -53,7 +53,6 @@ pub const UserPassword = struct {
 };
 
 pub const Value = union(enum) {
-    unavailable,
     arr: Arr,
     prowlarr: Prowlarr,
     jellyfin: Jellyfin,
@@ -63,7 +62,6 @@ pub const Value = union(enum) {
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
-            .unavailable => {},
             .arr => |item| try w.print("v{s} | queue {d}", .{ item.version, item.queue_count }),
             .prowlarr => |item| try w.print(
                 "v{s} | indexers {d} | health {d}",
