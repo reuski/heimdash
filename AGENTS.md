@@ -25,16 +25,16 @@
 
 ## Layout
 
-| Path            | Purpose                            |
-| --------------- | ---------------------------------- |
-| `PLAN.md`       | current progress and future scope  |
-| `README.md`     | commands, config, routes, module   |
-| `flake.nix`     | Zig, ZLS, treefmt, package, shell  |
-| `module.nix`    | NixOS module and generated config  |
-| `build.zig`     | executable and test targets        |
-| `src/main.zig`  | HTTP, IO, wiring                   |
-| `src/*.zig`     | pure helpers with colocated tests  |
-| `assets/`       | embedded HTML, CSS, JS             |
+| Path           | Purpose                           |
+| -------------- | --------------------------------- |
+| `PLAN.md`      | current progress and future scope |
+| `README.md`    | commands, config, routes, module  |
+| `flake.nix`    | Zig, ZLS, treefmt, package, shell |
+| `module.nix`   | NixOS module and generated config |
+| `build.zig`    | executable and test targets       |
+| `src/main.zig` | HTTP, IO, wiring                  |
+| `src/*.zig`    | pure helpers with colocated tests |
+| `assets/`      | embedded HTML, CSS, JS            |
 
 ## Commands
 
