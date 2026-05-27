@@ -33,11 +33,6 @@ const Config = struct {
 const probe_timeout_seconds = 2;
 const summary_timeout_seconds = 2;
 
-/// Runs `func` concurrently with a timer and returns whichever finishes first:
-/// the function's result, or `null` once `seconds` elapse. The loser is
-/// canceled, which interrupts an in-flight fetch at its next syscall and
-/// guarantees the worker is finished before this returns, so `func` may borrow
-/// the caller's memory.
 fn within(io: Io, seconds: i64, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) ?@typeInfo(@TypeOf(func)).@"fn".return_type.? {
     const Result = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
     const Race = union(enum) { value: Result, expired: void };
@@ -278,9 +273,11 @@ fn serviceCards(arena: std.mem.Allocator, services: []const Service) ![]const re
 fn serviceSummary(arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, credentials_directory: ?[]const u8, svc: Service) render.ServiceSummary {
     const adapter = summary.adapterForKind(svc.kind orelse return .{}) orelse return .{};
     if (adapter == .home_assistant and svc.entity == null) return .{};
-    const name = svc.credential orelse return .{};
-    const credential_bytes = readCredentialBytes(arena, io, credentials_directory, name) catch return .{};
-    const credential_value = summary.credentialHeaderValue(credential_bytes) orelse return .{};
+    const credential_value: ?[]const u8 = if (svc.credential) |name| value: {
+        const credential_bytes = readCredentialBytes(arena, io, credentials_directory, name) catch return .{};
+        break :value summary.credentialHeaderValue(credential_bytes) orelse return .{};
+    } else null;
+    if (summary.requiresCredential(adapter) and credential_value == null) return .{};
     return within(io, summary_timeout_seconds, summaryText, .{ arena, gpa, io, adapter, svc.url, credential_value, svc.entity }) orelse .{};
 }
 
@@ -290,7 +287,7 @@ fn readCredentialBytes(arena: std.mem.Allocator, io: Io, credentials_directory: 
     return Io.Dir.cwd().readFileAlloc(io, credential_path, arena, .limited(64 * 1024)) catch return error.CredentialUnavailable;
 }
 
-fn summaryText(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: []const u8, entity: ?[]const u8) render.ServiceSummary {
+fn summaryText(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: ?[]const u8, entity: ?[]const u8) render.ServiceSummary {
     var parse_arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer parse_arena_state.deinit();
     const parse_arena = parse_arena_state.allocator();
@@ -301,10 +298,11 @@ fn summaryText(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter
     return .{ .text = aw.written() };
 }
 
-fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: []const u8, entity: ?[]const u8) !summary.Value {
+fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: ?[]const u8, entity: ?[]const u8) !summary.Value {
     switch (adapter) {
         .sonarr, .radarr => {
-            const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = credential_value }};
+            const cred = credential_value orelse return error.SummaryUnavailable;
+            const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = cred }};
             const status_json = try fetchSummaryBody(gpa, io, base_url, summary.systemStatusPath(adapter), &headers, null);
             defer gpa.free(status_json);
             const queue_json = try fetchSummaryBody(gpa, io, base_url, summary.arrQueueStatusPath(adapter).?, &headers, null);
@@ -312,7 +310,8 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             return .{ .arr = try summary.parseArr(parse_arena, status_json, queue_json) };
         },
         .prowlarr => {
-            const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = credential_value }};
+            const cred = credential_value orelse return error.SummaryUnavailable;
+            const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = cred }};
             const status_json = try fetchSummaryBody(gpa, io, base_url, summary.systemStatusPath(adapter), &headers, null);
             defer gpa.free(status_json);
             const health_json = try fetchSummaryBody(gpa, io, base_url, summary.prowlarrHealthPath(), &headers, null);
@@ -322,7 +321,8 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             return .{ .prowlarr = try summary.parseProwlarr(parse_arena, status_json, health_json, indexer_json) };
         },
         .jellyfin => {
-            const headers = [_]http.Header{.{ .name = "X-Emby-Token", .value = credential_value }};
+            const cred = credential_value orelse return error.SummaryUnavailable;
+            const headers = [_]http.Header{.{ .name = "X-Emby-Token", .value = cred }};
             const status_json = try fetchSummaryBody(gpa, io, base_url, summary.systemStatusPath(adapter), &headers, null);
             defer gpa.free(status_json);
             const sessions_json = try fetchSummaryBody(gpa, io, base_url, summary.jellyfinSessionsPath(), &headers, null);
@@ -330,11 +330,14 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             return .{ .jellyfin = try summary.parseJellyfin(parse_arena, status_json, sessions_json) };
         },
         .adguard => {
-            const authorization = try summary.basicAuthorizationValue(gpa, credential_value);
-            defer {
-                @memset(authorization, 0);
-                gpa.free(authorization);
-            }
+            const authorization: ?[]u8 = if (credential_value) |cred|
+                try summary.basicAuthorizationValue(gpa, cred)
+            else
+                null;
+            defer if (authorization) |value| {
+                @memset(value, 0);
+                gpa.free(value);
+            };
             const status_json = try fetchSummaryBody(gpa, io, base_url, summary.systemStatusPath(adapter), &.{}, authorization);
             defer gpa.free(status_json);
             const stats_json = try fetchSummaryBody(gpa, io, base_url, summary.adguardStatsPath(), &.{}, authorization);
@@ -342,7 +345,8 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             return .{ .adguard = try summary.parseAdGuard(parse_arena, status_json, stats_json) };
         },
         .qbittorrent => {
-            const cookie = try fetchQbittorrentCookie(gpa, io, base_url, credential_value);
+            const cred = credential_value orelse return error.SummaryUnavailable;
+            const cookie = try fetchQbittorrentCookie(gpa, io, base_url, cred);
             defer {
                 @memset(cookie, 0);
                 gpa.free(cookie);
@@ -355,8 +359,9 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             return .{ .qbittorrent = try summary.parseQbittorrent(parse_arena, version_text, transfer_json) };
         },
         .home_assistant => {
+            const cred = credential_value orelse return error.SummaryUnavailable;
             const entity_id = entity orelse return error.SummaryUnavailable;
-            const authorization = try summary.bearerAuthorizationValue(gpa, credential_value);
+            const authorization = try summary.bearerAuthorizationValue(gpa, cred);
             defer {
                 @memset(authorization, 0);
                 gpa.free(authorization);
@@ -368,6 +373,11 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             const entity_json = try fetchSummaryBody(gpa, io, base_url, entity_path, &.{}, authorization);
             defer gpa.free(entity_json);
             return .{ .home_assistant = try summary.parseHomeAssistant(parse_arena, status_json, entity_json) };
+        },
+        .janitorr => {
+            const info_json = try fetchSummaryBody(gpa, io, base_url, summary.systemStatusPath(adapter), &.{}, null);
+            defer gpa.free(info_json);
+            return .{ .janitorr = try summary.parseJanitorr(parse_arena, info_json) };
         },
     }
 }
