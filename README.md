@@ -86,17 +86,15 @@ No local Nix requirement in this workspace. CI is the canonical Nix check.
 defaults shown above, and `disks` entries override the shared disk limit per mount.
 
 Service `kind` and `credential` are optional. Supported read-only summary kinds
-are `sonarr`, `radarr`, `prowlarr`, `jellyfin`, `adguard`, `qbittorrent`,
-`home_assistant`, and `janitorr`. Sonarr, Radarr, and Prowlarr credentials are
+are `sonarr`, `radarr`, `prowlarr`, `jellyfin`, `adguard`, `qbittorrent`, and
+`home_assistant`. Sonarr, Radarr, and Prowlarr credentials are
 API keys sent as `X-Api-Key`; Jellyfin uses an API key token sent as
 `X-Emby-Token`; qBittorrent credentials are `username:password`; Home Assistant
 uses a long-lived access token and `entity` selects the displayed state. AdGuard
 takes an optional `username:password` credential, sent as HTTP Basic auth only
-when configured, so an unauthenticated install needs none. Janitorr reads its
-Spring Boot Actuator `/actuator/info` build version and needs no credential
-(enable the `info` web endpoint in Janitorr). Missing credentials or failed
-summary requests leave the summary line blank and do not affect reachability.
-Secret values and credential source paths stay outside generated JSON.
+when configured, so an unauthenticated install needs none. Missing credentials or
+failed summary requests leave the summary line blank and do not affect
+reachability. Secret values and credential source paths stay outside generated JSON.
 
 ## NixOS Module
 

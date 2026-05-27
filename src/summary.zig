@@ -11,12 +11,11 @@ pub const Adapter = enum {
     adguard,
     qbittorrent,
     home_assistant,
-    janitorr,
 };
 
 pub fn requiresCredential(adapter: Adapter) bool {
     return switch (adapter) {
-        .adguard, .janitorr => false,
+        .adguard => false,
         else => true,
     };
 }
@@ -55,10 +54,6 @@ pub const HomeAssistant = struct {
     entity_unit: ?[]const u8 = null,
 };
 
-pub const Janitorr = struct {
-    version: []const u8,
-};
-
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -71,7 +66,6 @@ pub const Value = union(enum) {
     adguard: AdGuard,
     qbittorrent: Qbittorrent,
     home_assistant: HomeAssistant,
-    janitorr: Janitorr,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -101,7 +95,6 @@ pub const Value = union(enum) {
                 try w.print("api ok | {s} {s}", .{ item.entity_name, item.entity_state });
                 if (item.entity_unit) |unit| try w.print(" {s}", .{unit});
             },
-            .janitorr => |item| try w.print("v{s}", .{item.version}),
         }
     }
 };
@@ -158,14 +151,6 @@ const HomeAssistantEntityJson = struct {
     attributes: HomeAssistantAttributesJson = .{},
 };
 
-const JanitorrBuildJson = struct {
-    version: []const u8 = "",
-};
-
-const JanitorrInfoJson = struct {
-    build: JanitorrBuildJson = .{},
-};
-
 pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "sonarr")) return .sonarr;
     if (std.ascii.eqlIgnoreCase(kind, "radarr")) return .radarr;
@@ -174,7 +159,6 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "adguard")) return .adguard;
     if (std.ascii.eqlIgnoreCase(kind, "qbittorrent")) return .qbittorrent;
     if (std.ascii.eqlIgnoreCase(kind, "home_assistant")) return .home_assistant;
-    if (std.ascii.eqlIgnoreCase(kind, "janitorr")) return .janitorr;
     return null;
 }
 
@@ -186,7 +170,6 @@ pub fn systemStatusPath(adapter: Adapter) []const u8 {
         .adguard => "/control/status",
         .qbittorrent => "/api/v2/app/version",
         .home_assistant => "/api/",
-        .janitorr => "/actuator/info",
     };
 }
 
@@ -270,10 +253,12 @@ pub fn qbittorrentLoginBody(allocator: std.mem.Allocator, bytes: []const u8) ![]
 
 pub fn qbittorrentSessionCookie(set_cookie: []const u8) ?[]const u8 {
     const value = std.mem.trim(u8, set_cookie, " \t\r\n");
-    if (!std.mem.startsWith(u8, value, "SID=")) return null;
+    const eq = std.mem.indexOfScalar(u8, value, '=') orelse return null;
+    const name = value[0..eq];
+    if (!std.mem.eql(u8, name, "SID") and !std.mem.startsWith(u8, name, "QBT_SID")) return null;
     const end = std.mem.indexOfScalar(u8, value, ';') orelse value.len;
     const cookie = value[0..end];
-    if (cookie.len <= "SID=".len) return null;
+    if (cookie.len <= eq + 1) return null;
     if (std.mem.indexOfAny(u8, cookie, " \t\r\n;") != null) return null;
     return cookie;
 }
@@ -383,14 +368,6 @@ pub fn parseHomeAssistant(allocator: std.mem.Allocator, status_json: []const u8,
     };
 }
 
-pub fn parseJanitorr(allocator: std.mem.Allocator, info_json: []const u8) !Janitorr {
-    const info = try std.json.parseFromSliceLeaky(JanitorrInfoJson, allocator, info_json, .{
-        .ignore_unknown_fields = true,
-    });
-    if (info.build.version.len == 0) return error.MissingVersion;
-    return .{ .version = try allocator.dupe(u8, info.build.version) };
-}
-
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
     for (value) |c| {
         if (c == ' ') {
@@ -429,13 +406,11 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.adguard, adapterForKind("ADGUARD").?);
     try std.testing.expectEqual(Adapter.qbittorrent, adapterForKind("qBittorrent").?);
     try std.testing.expectEqual(Adapter.home_assistant, adapterForKind("home_assistant").?);
-    try std.testing.expectEqual(Adapter.janitorr, adapterForKind("Janitorr").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
 test "requiresCredential is false only for unauthenticated status endpoints" {
     try std.testing.expect(!requiresCredential(.adguard));
-    try std.testing.expect(!requiresCredential(.janitorr));
     try std.testing.expect(requiresCredential(.sonarr));
     try std.testing.expect(requiresCredential(.qbittorrent));
     try std.testing.expect(requiresCredential(.home_assistant));
@@ -454,7 +429,6 @@ test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/api/v2/app/version", systemStatusPath(.qbittorrent));
     try std.testing.expectEqualStrings("/api/v2/transfer/info", qbittorrentTransferPath());
     try std.testing.expectEqualStrings("/api/", systemStatusPath(.home_assistant));
-    try std.testing.expectEqualStrings("/actuator/info", systemStatusPath(.janitorr));
 
     const state_path = try homeAssistantStatePath(std.testing.allocator, "sensor.kitchen temperature");
     defer std.testing.allocator.free(state_path);
@@ -497,8 +471,10 @@ test "qbittorrent login helpers encode form body and session cookie" {
     }
     try std.testing.expectEqualStrings("username=admin&password=pass+word%2B", body);
     try std.testing.expectEqualStrings("SID=abc123", qbittorrentSessionCookie("SID=abc123; path=/").?);
+    try std.testing.expectEqualStrings("QBT_SID_8080=abc123", qbittorrentSessionCookie("QBT_SID_8080=abc123; HttpOnly; path=/").?);
     try std.testing.expect(qbittorrentSessionCookie("session=abc") == null);
     try std.testing.expect(qbittorrentSessionCookie("SID=") == null);
+    try std.testing.expect(qbittorrentSessionCookie("QBT_SID_8080=") == null);
 }
 
 test "isAvailableHttpStatus rejects auth failures" {
@@ -676,30 +652,6 @@ test "parseHomeAssistant rejects missing fields and malformed json" {
     } else |_| {}
 }
 
-test "parseJanitorr reads the actuator build version" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    const item = try parseJanitorr(
-        arena_state.allocator(),
-        "{ \"build\": { \"version\": \"2.1.0\", \"artifact\": \"janitorr\", \"name\": \"janitorr\" } }",
-    );
-    try std.testing.expectEqualStrings("2.1.0", item.version);
-}
-
-test "parseJanitorr rejects missing version and malformed json" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    try std.testing.expectError(error.MissingVersion, parseJanitorr(
-        arena_state.allocator(),
-        "{ \"build\": { \"artifact\": \"janitorr\" } }",
-    ));
-    if (parseJanitorr(arena_state.allocator(), "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
-}
-
 test "Value writes compact summary lines" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -725,8 +677,4 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .home_assistant = .{ .entity_name = "Kitchen", .entity_state = "21.4", .entity_unit = "C" } }).write(&aw.writer);
     try std.testing.expectEqualStrings("api ok | Kitchen 21.4 C", aw.written());
-
-    aw.clearRetainingCapacity();
-    try (Value{ .janitorr = .{ .version = "2.1.0" } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("v2.1.0", aw.written());
 }

@@ -374,11 +374,6 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             defer gpa.free(entity_json);
             return .{ .home_assistant = try summary.parseHomeAssistant(parse_arena, status_json, entity_json) };
         },
-        .janitorr => {
-            const info_json = try fetchSummaryBody(gpa, io, base_url, summary.systemStatusPath(adapter), &.{}, null);
-            defer gpa.free(info_json);
-            return .{ .janitorr = try summary.parseJanitorr(parse_arena, info_json) };
-        },
     }
 }
 
@@ -399,7 +394,7 @@ fn fetchSummaryBody(gpa: std.mem.Allocator, io: Io, base_url: []const u8, path: 
         .redirect_behavior = .unhandled,
         .keep_alive = false,
         .headers = .{ .authorization = if (authorization) |value| .{ .override = value } else .default },
-        .privileged_headers = headers,
+        .extra_headers = headers,
     });
 
     if (!summary.isAvailableHttpStatus(result.status)) return error.SummaryUnavailable;
