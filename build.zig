@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const test_step = b.step("test", "Run unit tests");
-    inline for (.{ "health.zig", "format.zig", "credential.zig" }) |name| {
+    inline for (.{ "health.zig", "format.zig", "credential.zig", "summary.zig" }) |name| {
         const test_mod = b.createModule(.{
             .root_source_file = b.path("src/" ++ name),
             .target = target,

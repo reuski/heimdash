@@ -57,9 +57,11 @@ No local Nix requirement in this workspace. CI is the canonical Nix check.
 `unknown` against these percent limits; omitted fields fall back to the built-in
 defaults shown above, and `disks` entries override the shared disk limit per mount.
 
-Service `kind` and `credential` are optional. `kind` selects future read-only
-summary support, while `credential` is only the systemd credential name. Secret
-values and credential source paths stay outside generated JSON.
+Service `kind` and `credential` are optional. Supported read-only summary kinds
+are `sonarr`, `radarr`, and `prowlarr`; each uses the named systemd credential
+as an `X-Api-Key` value. Missing credentials or failed summary requests leave
+the summary line blank and do not affect reachability. Secret values and
+credential source paths stay outside generated JSON.
 
 ## NixOS Module
 

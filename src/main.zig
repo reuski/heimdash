@@ -7,6 +7,7 @@ const http = std.http;
 const health = @import("health.zig");
 const format = @import("format.zig");
 const credential = @import("credential.zig");
+const summary = @import("summary.zig");
 
 const index_html = @embedFile("index.html");
 const style_css = @embedFile("style.css");
@@ -44,6 +45,26 @@ const ProbeJob = struct {
     fn release(job: *ProbeJob) void {
         if (job.refs.fetchSub(1, .acq_rel) != 1) return;
         job.allocator.free(job.url);
+        job.allocator.destroy(job);
+    }
+};
+
+const SummaryJob = struct {
+    allocator: std.mem.Allocator,
+    io: Io,
+    done: Io.Event = .unset,
+    refs: std.atomic.Value(u32) = .init(2),
+    adapter: summary.Adapter,
+    base_url: []u8,
+    api_key: []u8,
+    text: ?[]u8 = null,
+
+    fn release(job: *SummaryJob) void {
+        if (job.refs.fetchSub(1, .acq_rel) != 1) return;
+        job.allocator.free(job.base_url);
+        @memset(job.api_key, 0);
+        job.allocator.free(job.api_key);
+        if (job.text) |text| job.allocator.free(text);
         job.allocator.destroy(job);
     }
 };
@@ -184,7 +205,7 @@ fn servePollServices(req: *http.Server.Request, arena: std.mem.Allocator, io: Io
     const summaries = try arena.alloc(ServiceSummary, cfg.services.len);
     for (cfg.services, 0..) |svc, i| {
         states[i] = probeService(gpa, io, svc);
-        summaries[i] = serviceSummary(arena, io, credentials_directory, svc);
+        summaries[i] = serviceSummary(arena, io, gpa, credentials_directory, svc);
     }
 
     var aw: Io.Writer.Allocating = .init(arena);
@@ -258,7 +279,7 @@ fn renderServices(w: *Io.Writer, services: []const Service, states: ?[]const Ser
     try w.writeAll("<ul id=\"services\">");
     for (services, 0..) |svc, i| {
         const state = if (states) |items| items[i] else .checking;
-        const summary = if (summaries) |items| items[i].text else "";
+        const summary_text = if (summaries) |items| items[i].text else "";
         try w.writeAll("<li class=\"");
         try w.writeAll(serviceReachabilityClass(state));
         try w.writeAll("\"><a href=\"");
@@ -266,7 +287,7 @@ fn renderServices(w: *Io.Writer, services: []const Service, states: ?[]const Ser
         try w.writeAll("\"><span class=\"service-name\">");
         try format.escape(w, svc.name);
         try w.writeAll("</span><span class=\"service-summary\">");
-        try format.escape(w, summary);
+        try format.escape(w, summary_text);
         try w.writeAll("</span><span class=\"service-state\">");
         try w.writeAll(@tagName(state));
         try w.writeAll("</span></a></li>");
@@ -282,17 +303,123 @@ fn serviceReachabilityClass(state: ServiceReachability) []const u8 {
     };
 }
 
-fn serviceSummary(arena: std.mem.Allocator, io: Io, credentials_directory: ?[]const u8, svc: Service) ServiceSummary {
-    _ = svc.kind orelse return .{};
+fn serviceSummary(arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, credentials_directory: ?[]const u8, svc: Service) ServiceSummary {
+    const adapter = summary.adapterForKind(svc.kind orelse return .{}) orelse return .{};
     const name = svc.credential orelse return .{};
-    _ = readCredentialBytes(arena, io, credentials_directory, name) catch return .{};
-    return .{};
+    const credential_bytes = readCredentialBytes(arena, io, credentials_directory, name) catch return .{};
+    const api_key = summary.credentialHeaderValue(credential_bytes) orelse return .{};
+    return fetchSummaryWithTimeout(arena, gpa, io, adapter, svc.url, api_key);
 }
 
 fn readCredentialBytes(arena: std.mem.Allocator, io: Io, credentials_directory: ?[]const u8, name: []const u8) ![]const u8 {
     const directory = credentials_directory orelse return error.CredentialUnavailable;
     const credential_path = credential.path(arena, directory, name) catch return error.CredentialUnavailable;
     return Io.Dir.cwd().readFileAlloc(io, credential_path, arena, .limited(64 * 1024)) catch return error.CredentialUnavailable;
+}
+
+fn fetchSummaryWithTimeout(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, api_key: []const u8) ServiceSummary {
+    const job = gpa.create(SummaryJob) catch return .{};
+    const url = gpa.dupe(u8, base_url) catch {
+        gpa.destroy(job);
+        return .{};
+    };
+    const key = gpa.dupe(u8, api_key) catch {
+        gpa.free(url);
+        gpa.destroy(job);
+        return .{};
+    };
+    job.* = .{ .allocator = gpa, .io = io, .adapter = adapter, .base_url = url, .api_key = key };
+
+    const thread = std.Thread.spawn(.{}, runSummaryJob, .{job}) catch {
+        job.release();
+        job.release();
+        return .{};
+    };
+    thread.detach();
+
+    const finished = if (job.done.waitTimeout(io, .{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } })) true else |_| false;
+    if (!finished) {
+        job.release();
+        return .{};
+    }
+
+    const text = job.text orelse {
+        job.release();
+        return .{};
+    };
+    const owned_text = arena.dupe(u8, text) catch {
+        job.release();
+        return .{};
+    };
+    job.release();
+    return .{ .text = owned_text };
+}
+
+fn runSummaryJob(job: *SummaryJob) void {
+    job.text = fetchSummaryText(job.allocator, job.io, job.adapter, job.base_url, job.api_key) catch null;
+    job.done.set(job.io);
+    job.release();
+}
+
+fn fetchSummaryText(gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, api_key: []const u8) ![]u8 {
+    var parse_arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer parse_arena_state.deinit();
+    const parse_arena = parse_arena_state.allocator();
+
+    const value = try fetchSummaryValue(gpa, parse_arena, io, adapter, base_url, api_key);
+    var aw: Io.Writer.Allocating = .init(gpa);
+    errdefer aw.deinit();
+    try value.write(&aw.writer);
+    return try aw.toOwnedSlice();
+}
+
+fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, api_key: []const u8) !summary.Value {
+    const status_json = try fetchSummaryJson(gpa, io, base_url, summary.systemStatusPath(adapter), api_key);
+    defer gpa.free(status_json);
+
+    switch (adapter) {
+        .sonarr, .radarr => {
+            const queue_json = try fetchSummaryJson(gpa, io, base_url, summary.arrQueueStatusPath(adapter).?, api_key);
+            defer gpa.free(queue_json);
+            return .{ .arr = try summary.parseArr(parse_arena, status_json, queue_json) };
+        },
+        .prowlarr => {
+            const health_json = try fetchSummaryJson(gpa, io, base_url, summary.prowlarrHealthPath(), api_key);
+            defer gpa.free(health_json);
+            const indexer_json = try fetchSummaryJson(gpa, io, base_url, summary.prowlarrIndexerPath(), api_key);
+            defer gpa.free(indexer_json);
+            return .{ .prowlarr = try summary.parseProwlarr(parse_arena, status_json, health_json, indexer_json) };
+        },
+    }
+}
+
+fn fetchSummaryJson(gpa: std.mem.Allocator, io: Io, base_url: []const u8, path: []const u8, api_key: []const u8) ![]u8 {
+    const url = try endpointUrl(gpa, base_url, path);
+    defer gpa.free(url);
+
+    var aw: Io.Writer.Allocating = .init(gpa);
+    errdefer aw.deinit();
+
+    var client: http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+
+    const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = api_key }};
+    const result = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .response_writer = &aw.writer,
+        .redirect_behavior = .unhandled,
+        .keep_alive = false,
+        .privileged_headers = &headers,
+    });
+
+    if (!summary.isAvailableHttpStatus(result.status)) return error.SummaryUnavailable;
+    return try aw.toOwnedSlice();
+}
+
+fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []const u8) ![]u8 {
+    const root = std.mem.trimEnd(u8, base_url, "/");
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ root, path });
 }
 
 fn probeService(gpa: std.mem.Allocator, io: Io, svc: Service) ServiceReachability {
