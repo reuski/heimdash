@@ -53,7 +53,9 @@ let
     map (service: service.credential) cfg.services
   );
   credentialNameIsSafe = name: name != "" && builtins.match ".*[/:].*" name == null;
-  referencedCredentialsExist = lib.all (name: lib.hasAttr name cfg.credentials) referencedCredentialNames;
+  referencedCredentialsExist = lib.all (
+    name: lib.hasAttr name cfg.credentials
+  ) referencedCredentialNames;
   credentialNamesAreSafe = lib.all credentialNameIsSafe credentialNames;
   credentialPathsAreSet = lib.all (name: cfg.credentials.${name}.path != "") credentialNames;
   thresholdIsOrdered = threshold: threshold.warn < threshold.critical;
