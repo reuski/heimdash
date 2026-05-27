@@ -177,12 +177,12 @@ but never the credential source path or secret value.
 
 ## Routes
 
-| Method | Path             | Response           |
-| ------ | ---------------- | ------------------ |
-| `GET`  | `/`              | HTML               |
-| `GET`  | `/stream`        | live SSE patches   |
-| `GET`  | `/style.css`     | embedded CSS       |
-| `GET`  | `/datastar.js`   | embedded JS        |
+| Method | Path           | Response         |
+| ------ | -------------- | ---------------- |
+| `GET`  | `/`            | HTML             |
+| `GET`  | `/stream`      | live SSE patches |
+| `GET`  | `/style.css`   | embedded CSS     |
+| `GET`  | `/datastar.js` | embedded JS      |
 
 ## License
 
