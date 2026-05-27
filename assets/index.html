@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>heimdash</title>
+    <title>… // HEIMDASH</title>
     <link
       rel="icon"
       type="image/svg+xml"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff9d42' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='24' height='24' rx='3' fill='%23070604' stroke='none'/%3E%3Cpath d='M22 17a10 10 0 0 0-20 0'/%3E%3Cpath d='M6 17a6 6 0 0 1 12 0'/%3E%3Cpath d='M10 17a2 2 0 0 1 4 0'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff9d42' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 17a10 10 0 0 0-20 0'/%3E%3Cpath d='M6 17a6 6 0 0 1 12 0'/%3E%3Cpath d='M10 17a2 2 0 0 1 4 0'/%3E%3C/svg%3E"
     />
     <link rel="stylesheet" href="/style.css" />
     <script type="module" src="/datastar.js"></script>
@@ -18,6 +18,10 @@
         <div class="frame-title">HEIMDASH</div>
 
         <div class="titlebar">
+          <time id="clock" aria-live="off">
+            <span class="clock-date"></span><span class="clock-sep">//</span
+            ><span class="clock-time"></span>
+          </time>
           <span class="live"><i class="dot"></i>LIVE</span>
         </div>
 
@@ -41,6 +45,79 @@
         </div>
       </div>
     </main>
+
+    <script type="module">
+      const clock = document.getElementById("clock");
+      const clockDate = clock.querySelector(".clock-date");
+      const clockTime = clock.querySelector(".clock-time");
+      const services = document.getElementById("services");
+      const dateFormat = new Intl.DateTimeFormat("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      });
+      const timeFormat = new Intl.DateTimeFormat("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+      });
+
+      const setTitle = (mark) => {
+        document.title = `${mark} // HEIMDASH`;
+      };
+
+      const syncClock = () => {
+        const now = new Date();
+        clock.dateTime = now.toISOString();
+        clockDate.textContent = dateFormat.format(now).toUpperCase();
+        clockTime.textContent = timeFormat.format(now);
+        setTimeout(syncClock, 1000 - (Date.now() % 1000));
+      };
+
+      let alertTitleTimer;
+      let alertTitleMark = ".";
+
+      const stopAlertTitle = () => {
+        clearInterval(alertTitleTimer);
+        alertTitleTimer = undefined;
+      };
+
+      const pulseAlertTitle = () => {
+        alertTitleMark = alertTitleMark === "!" ? "." : "!";
+        setTitle(alertTitleMark);
+      };
+
+      const startAlertTitle = () => {
+        if (alertTitleTimer) return;
+        alertTitleMark = ".";
+        pulseAlertTitle();
+        alertTitleTimer = setInterval(pulseAlertTitle, 1000);
+      };
+
+      const syncTitle = () => {
+        if (services.querySelector(".is-down")) {
+          startAlertTitle();
+          return;
+        }
+
+        stopAlertTitle();
+        setTitle(
+          !services.children.length || services.querySelector(".is-checking")
+            ? "…"
+            : "✓",
+        );
+      };
+
+      syncClock();
+      syncTitle();
+      new MutationObserver(syncTitle).observe(services, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class"],
+      });
+    </script>
 
     <div hidden data-on-interval__duration.30s.leading="@get('/poll')"></div>
     <div

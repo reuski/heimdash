@@ -195,7 +195,7 @@ main {
   z-index: 3;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   min-height: 3.5rem;
   padding: var(--space-md) var(--space-2xl) 0;
   border-bottom: 1px solid var(--border);
@@ -203,6 +203,16 @@ main {
   font-size: var(--text-xs);
   letter-spacing: 0.15em;
   text-transform: uppercase;
+}
+
+#clock {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.clock-sep {
+  margin: 0 0.5em;
+  color: var(--accent-dim);
 }
 
 .live {
