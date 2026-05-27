@@ -30,19 +30,47 @@ No local Nix requirement in this workspace. CI is the canonical Nix check.
     {
       "name": "AdGuard",
       "url": "http://adguard.example.invalid",
-      "check": "http://adguard.example.invalid/login.html"
+      "check": "http://adguard.example.invalid/login.html",
+      "kind": "adguard",
+      "credential": "adguard-basic"
     },
-    { "name": "Jellyfin", "url": "http://jellyfin.example.invalid" },
+    {
+      "name": "Jellyfin",
+      "url": "http://jellyfin.example.invalid",
+      "kind": "jellyfin",
+      "credential": "jellyfin-api-key"
+    },
     {
       "name": "Sonarr",
       "url": "http://sonarr.example.invalid",
       "kind": "sonarr",
       "credential": "sonarr-api-key"
     },
-    { "name": "Radarr", "url": "http://radarr.example.invalid" },
-    { "name": "Prowlarr", "url": "http://prowlarr.example.invalid" },
-    { "name": "qBittorrent", "url": "http://qbittorrent.example.invalid" },
-    { "name": "Home Assistant", "url": "http://home-assistant.example.invalid" }
+    {
+      "name": "Radarr",
+      "url": "http://radarr.example.invalid",
+      "kind": "radarr",
+      "credential": "radarr-api-key"
+    },
+    {
+      "name": "Prowlarr",
+      "url": "http://prowlarr.example.invalid",
+      "kind": "prowlarr",
+      "credential": "prowlarr-api-key"
+    },
+    {
+      "name": "qBittorrent",
+      "url": "http://qbittorrent.example.invalid",
+      "kind": "qbittorrent",
+      "credential": "qbittorrent-login"
+    },
+    {
+      "name": "Home Assistant",
+      "url": "http://home-assistant.example.invalid",
+      "kind": "home_assistant",
+      "credential": "home-assistant-token",
+      "entity": "sensor.outside_temperature"
+    }
   ],
   "thresholds": {
     "cpu": { "warn": 75, "critical": 90 },
@@ -58,10 +86,14 @@ No local Nix requirement in this workspace. CI is the canonical Nix check.
 defaults shown above, and `disks` entries override the shared disk limit per mount.
 
 Service `kind` and `credential` are optional. Supported read-only summary kinds
-are `sonarr`, `radarr`, and `prowlarr`; each uses the named systemd credential
-as an `X-Api-Key` value. Missing credentials or failed summary requests leave
-the summary line blank and do not affect reachability. Secret values and
-credential source paths stay outside generated JSON.
+are `sonarr`, `radarr`, `prowlarr`, `jellyfin`, `adguard`, `qbittorrent`, and
+`home_assistant`. Sonarr, Radarr, and Prowlarr credentials are API keys sent as
+`X-Api-Key`; Jellyfin uses an API key token sent as `X-Emby-Token`; AdGuard and
+qBittorrent credentials are `username:password`; Home Assistant uses a
+long-lived access token and `entity` selects the displayed state. Missing
+credentials or failed summary requests leave the summary line blank and do not
+affect reachability. Secret values and credential source paths stay outside
+generated JSON.
 
 ## NixOS Module
 
@@ -83,20 +115,54 @@ credential source paths stay outside generated JSON.
                 name = "AdGuard";
                 url = "http://adguard.example.invalid";
                 check = "http://adguard.example.invalid/login.html";
+                kind = "adguard";
+                credential = "adguard-basic";
               }
-              { name = "Jellyfin"; url = "http://jellyfin.example.invalid"; }
+              {
+                name = "Jellyfin";
+                url = "http://jellyfin.example.invalid";
+                kind = "jellyfin";
+                credential = "jellyfin-api-key";
+              }
               {
                 name = "Sonarr";
                 url = "http://sonarr.example.invalid";
                 kind = "sonarr";
                 credential = "sonarr-api-key";
               }
-              { name = "Radarr"; url = "http://radarr.example.invalid"; }
-              { name = "Prowlarr"; url = "http://prowlarr.example.invalid"; }
-              { name = "qBittorrent"; url = "http://qbittorrent.example.invalid"; }
-              { name = "Home Assistant"; url = "http://home-assistant.example.invalid"; }
+              {
+                name = "Radarr";
+                url = "http://radarr.example.invalid";
+                kind = "radarr";
+                credential = "radarr-api-key";
+              }
+              {
+                name = "Prowlarr";
+                url = "http://prowlarr.example.invalid";
+                kind = "prowlarr";
+                credential = "prowlarr-api-key";
+              }
+              {
+                name = "qBittorrent";
+                url = "http://qbittorrent.example.invalid";
+                kind = "qbittorrent";
+                credential = "qbittorrent-login";
+              }
+              {
+                name = "Home Assistant";
+                url = "http://home-assistant.example.invalid";
+                kind = "home_assistant";
+                credential = "home-assistant-token";
+                entity = "sensor.outside_temperature";
+              }
             ];
+            credentials.adguard-basic.path = "/run/secrets/adguard-basic";
+            credentials.jellyfin-api-key.path = "/run/secrets/jellyfin-api-key";
             credentials.sonarr-api-key.path = "/run/secrets/sonarr-api-key";
+            credentials.radarr-api-key.path = "/run/secrets/radarr-api-key";
+            credentials.prowlarr-api-key.path = "/run/secrets/prowlarr-api-key";
+            credentials.qbittorrent-login.path = "/run/secrets/qbittorrent-login";
+            credentials.home-assistant-token.path = "/run/secrets/home-assistant-token";
           };
         }
       ];

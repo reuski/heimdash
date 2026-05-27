@@ -53,6 +53,7 @@ let
     map (service: service.credential) cfg.services
   );
   credentialNameIsSafe = name: name != "" && builtins.match ".*[/:].*" name == null;
+  serviceEntityIsSet = service: service.entity == null || service.entity != "";
   referencedCredentialsExist = lib.all (
     name: lib.hasAttr name cfg.credentials
   ) referencedCredentialNames;
@@ -131,6 +132,11 @@ in
               type = lib.types.nullOr lib.types.str;
               default = null;
               description = "Optional systemd credential name for read-only summaries.";
+            };
+            entity = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional Home Assistant entity id for the read-only summary line.";
             };
           };
         }
@@ -240,6 +246,10 @@ in
       {
         assertion = lib.all (service: service.credential == null || service.credential != "") cfg.services;
         message = "services.heimdash.services entries with credential set must use a non-empty credential name.";
+      }
+      {
+        assertion = lib.all serviceEntityIsSet cfg.services;
+        message = "services.heimdash.services entries with entity set must use a non-empty entity id.";
       }
       {
         assertion = credentialNamesAreSafe;
