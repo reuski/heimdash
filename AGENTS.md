@@ -2,10 +2,8 @@
 
 ## Source Of Truth
 
-- `PLAN.md`: current progress, scope, and next implementation steps.
 - `README.md`: user-facing commands, config, routes, and module usage.
 - `AGENTS.md`: repo rules for AI agents.
-- If docs conflict, follow `PLAN.md` for implementation scope.
 
 ## Hard Rules
 
@@ -27,7 +25,6 @@
 
 | Path           | Purpose                           |
 | -------------- | --------------------------------- |
-| `PLAN.md`      | current progress and future scope |
 | `README.md`    | commands, config, routes, module  |
 | `flake.nix`    | Zig, ZLS, treefmt, package, shell |
 | `module.nix`   | NixOS module and generated config |
@@ -80,6 +77,4 @@ No local Nix requirement. CI is the canonical Nix check.
 
 ## Scope Control
 
-- New features land in `PLAN.md` first.
 - Keep repo docs host agnostic; consuming flakes own hostnames, domains, ports, mounts, and inventory.
-- Anything outside `PLAN.md` is out of scope unless the user explicitly expands scope.

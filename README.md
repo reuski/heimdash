@@ -180,8 +180,7 @@ but never the credential source path or secret value.
 | Method | Path             | Response           |
 | ------ | ---------------- | ------------------ |
 | `GET`  | `/`              | HTML               |
-| `GET`  | `/poll`          | metrics SSE patch  |
-| `GET`  | `/poll/services` | services SSE patch |
+| `GET`  | `/stream`        | live SSE patches   |
 | `GET`  | `/style.css`     | embedded CSS       |
 | `GET`  | `/datastar.js`   | embedded JS        |
 

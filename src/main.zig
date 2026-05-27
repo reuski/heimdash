@@ -127,9 +127,8 @@ fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentia
         s.close(io);
     }
 
-    var arena_state: std.heap.ArenaAllocator = .init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    var request_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer request_arena.deinit();
 
     var recv_buf: [4096]u8 = undefined;
     var send_buf: [16 * 1024]u8 = undefined;
@@ -138,14 +137,14 @@ fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentia
     var conn: http.Server = .init(&stream_reader.interface, &stream_writer.interface);
 
     var request = conn.receiveHead() catch return;
-    try route(&request, arena, io, gpa, cfg, credentials_directory);
+    try route(&request, &request_arena, io, gpa, cfg, credentials_directory);
 }
 
-fn route(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
+fn route(req: *http.Server.Request, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
+    const arena = request_arena.allocator();
     const path = requestPath(req.head.target);
     if (std.mem.eql(u8, path, "/")) return servePage(req, arena, io, cfg);
-    if (std.mem.eql(u8, path, "/poll")) return servePoll(req, arena, io, cfg);
-    if (std.mem.eql(u8, path, "/poll/services")) return servePollServices(req, arena, io, gpa, cfg, credentials_directory);
+    if (std.mem.eql(u8, path, "/stream")) return serveStream(req, request_arena, io, gpa, cfg, credentials_directory);
     if (std.mem.eql(u8, path, "/style.css")) return serveAsset(req, style_css, "text/css; charset=utf-8");
     if (std.mem.eql(u8, path, "/datastar.js")) return serveAsset(req, datastar_js, "application/javascript; charset=utf-8");
     try req.respond("not found\n", .{
@@ -161,6 +160,14 @@ fn requestPath(target: []const u8) []const u8 {
 }
 
 const asset_cache: http.Header = .{ .name = "cache-control", .value = "public, max-age=31536000, immutable" };
+const sse_headers = [_]http.Header{
+    .{ .name = "content-type", .value = "text/event-stream" },
+    .{ .name = "cache-control", .value = "no-store" },
+};
+
+const stream_tick_seconds = 15;
+const stream_metrics_every_ticks = 2;
+const stream_services_every_ticks = 4;
 
 fn serveAsset(req: *http.Server.Request, body: []const u8, ctype: []const u8) !void {
     try req.respond(body, .{
@@ -192,45 +199,94 @@ fn servePage(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *
     });
 }
 
-fn servePoll(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config) !void {
-    const metric_data = try collectMetrics(arena, io, cfg);
-    var aw: Io.Writer.Allocating = .init(arena);
-    defer aw.deinit();
-    const w = &aw.writer;
+fn serveStream(req: *http.Server.Request, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
+    const method = req.head.method;
+    var body_buf: [16 * 1024]u8 = undefined;
+    var body = try req.respondStreaming(&body_buf, .{
+        .respond_options = .{
+            .extra_headers = &sse_headers,
+        },
+    });
+    if (method == .HEAD) return body.end();
+
+    writeHeartbeat(&body) catch return;
+    writeStreamMetrics(&body, request_arena, io, cfg) catch |err| {
+        if (err == error.WriteFailed) return;
+        return err;
+    };
+    writeStreamServices(&body, request_arena, io, gpa, cfg, credentials_directory) catch |err| {
+        if (err == error.WriteFailed) return;
+        return err;
+    };
+
+    var ticks: u64 = 0;
+    while (true) {
+        Io.sleep(io, .fromSeconds(stream_tick_seconds), .awake) catch return;
+        ticks += 1;
+        writeHeartbeat(&body) catch return;
+        if (ticks % stream_metrics_every_ticks == 0) {
+            writeStreamMetrics(&body, request_arena, io, cfg) catch |err| {
+                if (err == error.WriteFailed) return;
+                return err;
+            };
+        }
+        if (ticks % stream_services_every_ticks == 0) {
+            writeStreamServices(&body, request_arena, io, gpa, cfg, credentials_directory) catch |err| {
+                if (err == error.WriteFailed) return;
+                return err;
+            };
+        }
+    }
+}
+
+fn writeStreamMetrics(body: *http.BodyWriter, request_arena: *std.heap.ArenaAllocator, io: Io, cfg: *const Config) !void {
+    defer _ = request_arena.reset(.free_all);
+    const metric_data = try collectMetrics(request_arena.allocator(), io, cfg);
+    try writeMetricsEvent(&body.writer, metric_data);
+    try flushStream(body);
+}
+
+fn writeStreamServices(body: *http.BodyWriter, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
+    defer _ = request_arena.reset(.free_all);
+    const service_data = try collectServices(request_arena.allocator(), io, gpa, cfg, credentials_directory);
+    try writeServicesEvent(&body.writer, service_data);
+    try flushStream(body);
+}
+
+fn writeHeartbeat(body: *http.BodyWriter) !void {
+    try body.writer.writeAll(": heartbeat\n\n");
+    try flushStream(body);
+}
+
+fn flushStream(body: *http.BodyWriter) !void {
+    try body.writer.flush();
+    try body.flush();
+}
+
+fn writeMetricsEvent(w: *Io.Writer, metric_data: render.Metrics) !void {
     try w.writeAll("event: datastar-patch-elements\ndata: elements ");
     try render.metrics(w, metric_data);
     try w.writeAll("\n\n");
-    try req.respond(aw.written(), .{
-        .keep_alive = false,
-        .extra_headers = &.{
-            .{ .name = "content-type", .value = "text/event-stream" },
-            .{ .name = "cache-control", .value = "no-store" },
-        },
-    });
 }
 
-fn servePollServices(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
+fn writeServicesEvent(w: *Io.Writer, service_data: render.Services) !void {
+    try w.writeAll("event: datastar-patch-elements\ndata: elements ");
+    try render.services(w, service_data);
+    try w.writeAll("\n\n");
+}
+
+fn collectServices(arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !render.Services {
     const states = try arena.alloc(render.ServiceReachability, cfg.services.len);
     const summaries = try arena.alloc(render.ServiceSummary, cfg.services.len);
     for (cfg.services, 0..) |svc, i| {
         states[i] = probeService(gpa, io, svc);
         summaries[i] = serviceSummary(arena, io, gpa, credentials_directory, svc);
     }
-    const service_items = try serviceCards(arena, cfg.services);
-
-    var aw: Io.Writer.Allocating = .init(arena);
-    defer aw.deinit();
-    const w = &aw.writer;
-    try w.writeAll("event: datastar-patch-elements\ndata: elements ");
-    try render.services(w, .{ .items = service_items, .states = states, .summaries = summaries });
-    try w.writeAll("\n\n");
-    try req.respond(aw.written(), .{
-        .keep_alive = false,
-        .extra_headers = &.{
-            .{ .name = "content-type", .value = "text/event-stream" },
-            .{ .name = "cache-control", .value = "no-store" },
-        },
-    });
+    return .{
+        .items = try serviceCards(arena, cfg.services),
+        .states = states,
+        .summaries = summaries,
+    };
 }
 
 fn serviceCards(arena: std.mem.Allocator, services: []const Service) ![]const render.ServiceCard {
