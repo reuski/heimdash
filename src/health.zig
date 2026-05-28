@@ -16,6 +16,7 @@ pub const Config = struct {
     memory: Thresholds = .{ .warn = 80, .critical = 90 },
     disk: Thresholds = .{ .warn = 80, .critical = 90 },
     disks: []const MountThreshold = &.{},
+    temperature: Thresholds = .{ .warn = 75, .critical = 85 },
 };
 
 pub const State = enum { ok, warn, critical, unknown };
@@ -75,6 +76,8 @@ test "Config parses with defaulted and partial fields" {
     try std.testing.expectEqual(@as(u8, 80), cfg.memory.warn);
     try std.testing.expectEqual(@as(u8, 95), diskThresholdFor(cfg, "/srv").warn);
     try std.testing.expectEqual(@as(u8, 99), diskThresholdFor(cfg, "/srv").critical);
+    try std.testing.expectEqual(@as(u8, 75), cfg.temperature.warn);
+    try std.testing.expectEqual(@as(u8, 85), cfg.temperature.critical);
 }
 
 test "cssClass covers every state" {

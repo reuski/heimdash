@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const Io = std.Io;
 const net = std.Io.net;
 const http = std.http;
@@ -7,8 +6,10 @@ const http = std.http;
 const health = @import("health.zig");
 const format = @import("format.zig");
 const credential = @import("credential.zig");
+const host = @import("host.zig");
 const summary = @import("summary.zig");
 const render = @import("render.zig");
+const sampler = @import("sampler.zig");
 
 const index_html = @embedFile("index.html");
 const style_css = @embedFile("style.css");
@@ -28,6 +29,7 @@ const Config = struct {
     mounts: []const []const u8,
     services: []const Service,
     thresholds: health.Config = .{},
+    networkInterface: ?[]const u8 = null,
 };
 
 const probe_timeout_seconds = 2;
@@ -73,6 +75,10 @@ pub fn main(init: std.process.Init) !void {
     const listen_addr = net.IpAddress.parseLiteral(cfg.listen) catch |err|
         std.process.fatal("invalid listen {s}: {t}", .{ cfg.listen, err });
 
+    var metric_sampler = sampler.Sampler.init(gpa, metricConfig(&cfg)) catch |err|
+        std.process.fatal("failed to initialize metric sampler: {t}", .{err});
+    defer metric_sampler.deinit();
+
     var server = listen_addr.listen(io, .{ .reuse_address = true }) catch |err|
         std.process.fatal("failed to bind {f}: {t}", .{ listen_addr, err });
     defer server.deinit(io);
@@ -84,7 +90,7 @@ pub fn main(init: std.process.Init) !void {
             std.log.err("accept failed: {t}", .{err});
             continue;
         };
-        const thread = std.Thread.spawn(.{}, serveConnectionThread, .{ io, gpa, &cfg, credentials_directory, stream }) catch |err| {
+        const thread = std.Thread.spawn(.{}, serveConnectionThread, .{ io, gpa, &cfg, credentials_directory, &metric_sampler, stream }) catch |err| {
             var s = stream;
             s.close(io);
             std.log.err("thread spawn failed: {t}", .{err});
@@ -92,6 +98,14 @@ pub fn main(init: std.process.Init) !void {
         };
         thread.detach();
     }
+}
+
+fn metricConfig(cfg: *const Config) sampler.Config {
+    return .{
+        .mounts = cfg.mounts,
+        .thresholds = cfg.thresholds,
+        .network_interface = cfg.networkInterface,
+    };
 }
 
 fn parseConfigArg(args: []const [:0]const u8) ?[]const u8 {
@@ -102,12 +116,12 @@ fn parseConfigArg(args: []const [:0]const u8) ?[]const u8 {
     return null;
 }
 
-fn serveConnectionThread(io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8, stream: net.Stream) void {
-    serveConnection(io, gpa, cfg, credentials_directory, stream) catch |err|
+fn serveConnectionThread(io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8, metric_sampler: *sampler.Sampler, stream: net.Stream) void {
+    serveConnection(io, gpa, cfg, credentials_directory, metric_sampler, stream) catch |err|
         std.log.err("connection error: {t}", .{err});
 }
 
-fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8, stream: net.Stream) !void {
+fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8, metric_sampler: *sampler.Sampler, stream: net.Stream) !void {
     defer {
         var s = stream;
         s.close(io);
@@ -123,14 +137,14 @@ fn serveConnection(io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentia
     var conn: http.Server = .init(&stream_reader.interface, &stream_writer.interface);
 
     var request = conn.receiveHead() catch return;
-    try route(&request, &request_arena, io, gpa, cfg, credentials_directory);
+    try route(&request, &request_arena, io, gpa, cfg, credentials_directory, metric_sampler);
 }
 
-fn route(req: *http.Server.Request, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
+fn route(req: *http.Server.Request, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8, metric_sampler: *sampler.Sampler) !void {
     const arena = request_arena.allocator();
     const path = requestPath(req.head.target);
-    if (std.mem.eql(u8, path, "/")) return servePage(req, arena, io, cfg);
-    if (std.mem.eql(u8, path, "/stream")) return serveStream(req, request_arena, io, gpa, cfg, credentials_directory);
+    if (std.mem.eql(u8, path, "/")) return servePage(req, arena, io, cfg, metric_sampler);
+    if (std.mem.eql(u8, path, "/stream")) return serveStream(req, request_arena, io, gpa, cfg, credentials_directory, metric_sampler);
     if (std.mem.eql(u8, path, "/style.css")) return serveAsset(req, style_css, "text/css; charset=utf-8");
     if (std.mem.eql(u8, path, "/datastar.js")) return serveAsset(req, datastar_js, "application/javascript; charset=utf-8");
     try req.respond("not found\n", .{
@@ -162,19 +176,19 @@ fn serveAsset(req: *http.Server.Request, body: []const u8, ctype: []const u8) !v
     });
 }
 
-fn servePage(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config) !void {
+fn servePage(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *const Config, metric_sampler: *sampler.Sampler) !void {
     var hostname_buf: [256]u8 = undefined;
-    const hostname = readHostname(io, &hostname_buf) catch "unknown";
+    const host_name = host.hostname(io, &hostname_buf) catch "unknown";
 
     var uptime_buf: [64]u8 = undefined;
-    const uptime_text = format.uptime(&uptime_buf, readUptime(io) catch 0);
+    const uptime_text = format.uptime(&uptime_buf, host.uptime(io) catch 0);
 
-    const metric_data = try collectMetrics(arena, io, cfg);
+    const metric_data = try metric_sampler.snapshot(arena, io, metricConfig(cfg));
     const service_items = try serviceCards(arena, cfg.services);
     var aw: Io.Writer.Allocating = .init(arena);
     defer aw.deinit();
     try render.page(&aw.writer, index_html, .{
-        .hostname = hostname,
+        .hostname = host_name,
         .uptime = uptime_text,
         .metrics = metric_data,
         .services = .{ .items = service_items },
@@ -185,7 +199,7 @@ fn servePage(req: *http.Server.Request, arena: std.mem.Allocator, io: Io, cfg: *
     });
 }
 
-fn serveStream(req: *http.Server.Request, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
+fn serveStream(req: *http.Server.Request, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8, metric_sampler: *sampler.Sampler) !void {
     const method = req.head.method;
     var body_buf: [16 * 1024]u8 = undefined;
     var body = try req.respondStreaming(&body_buf, .{
@@ -195,13 +209,13 @@ fn serveStream(req: *http.Server.Request, request_arena: *std.heap.ArenaAllocato
     });
     if (method == .HEAD) return body.end();
 
-    runStream(&body, request_arena, io, gpa, cfg, credentials_directory) catch |err|
+    runStream(&body, request_arena, io, gpa, cfg, credentials_directory, metric_sampler) catch |err|
         if (err != error.WriteFailed) return err;
 }
 
-fn runStream(body: *http.BodyWriter, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8) !void {
+fn runStream(body: *http.BodyWriter, request_arena: *std.heap.ArenaAllocator, io: Io, gpa: std.mem.Allocator, cfg: *const Config, credentials_directory: ?[]const u8, metric_sampler: *sampler.Sampler) !void {
     try writeHeartbeat(body);
-    try writeStreamMetrics(body, request_arena, io, cfg);
+    try writeStreamMetrics(body, request_arena, io, cfg, metric_sampler);
     try writeStreamServices(body, request_arena, io, gpa, cfg, credentials_directory);
 
     var ticks: u64 = 0;
@@ -209,14 +223,14 @@ fn runStream(body: *http.BodyWriter, request_arena: *std.heap.ArenaAllocator, io
         Io.sleep(io, .fromSeconds(stream_tick_seconds), .awake) catch return;
         ticks += 1;
         try writeHeartbeat(body);
-        if (ticks % stream_metrics_every_ticks == 0) try writeStreamMetrics(body, request_arena, io, cfg);
+        if (ticks % stream_metrics_every_ticks == 0) try writeStreamMetrics(body, request_arena, io, cfg, metric_sampler);
         if (ticks % stream_services_every_ticks == 0) try writeStreamServices(body, request_arena, io, gpa, cfg, credentials_directory);
     }
 }
 
-fn writeStreamMetrics(body: *http.BodyWriter, request_arena: *std.heap.ArenaAllocator, io: Io, cfg: *const Config) !void {
+fn writeStreamMetrics(body: *http.BodyWriter, request_arena: *std.heap.ArenaAllocator, io: Io, cfg: *const Config, metric_sampler: *sampler.Sampler) !void {
     defer _ = request_arena.reset(.free_all);
-    const metric_data = try collectMetrics(request_arena.allocator(), io, cfg);
+    const metric_data = try metric_sampler.snapshot(request_arena.allocator(), io, metricConfig(cfg));
     try writeMetricsEvent(&body.writer, metric_data);
     try flushStream(body);
 }
@@ -469,116 +483,3 @@ fn isReachableStatus(status: http.Status) bool {
         },
     };
 }
-
-fn collectMetrics(arena: std.mem.Allocator, io: Io, cfg: *const Config) !render.Metrics {
-    const t = cfg.thresholds;
-
-    const load_opt: ?f64 = readLoadAvg(io) catch null;
-    const ncpu = std.Thread.getCpuCount() catch 1;
-    const cpu_pct: ?u64 = if (load_opt) |load|
-        @min(100, @as(u64, @intFromFloat(load / @as(f64, @floatFromInt(ncpu)) * 100.0)))
-    else
-        null;
-    const cpu_detail = if (load_opt) |load|
-        try std.fmt.allocPrint(arena, "load {d:.2}", .{load})
-    else
-        "load --";
-    const cpu: render.MetricRow = .{
-        .label = "CPU",
-        .percent = cpu_pct,
-        .detail = cpu_detail,
-        .state = health.classify(cpu_pct, t.cpu),
-    };
-
-    const mem = readMemInfo(io) catch render.MemInfo{ .total = 0, .available = 0 };
-    const memory = try usageRow(arena, "Memory", mem.total, mem.available, t.memory);
-
-    const disks = try arena.alloc(render.MetricRow, cfg.mounts.len);
-    for (cfg.mounts, 0..) |mnt, i| {
-        const fs = readDiskFree(mnt) catch render.DiskUsage{ .total = 0, .free = 0 };
-        disks[i] = try usageRow(arena, mnt, fs.total, fs.free, health.diskThresholdFor(t, mnt));
-    }
-    return .{ .cpu = cpu, .memory = memory, .disks = disks };
-}
-
-fn usageRow(arena: std.mem.Allocator, label: []const u8, total: u64, free: u64, thresholds: health.Thresholds) !render.MetricRow {
-    const used = if (total > free) total - free else 0;
-    const pct: ?u64 = if (total == 0) null else @min(100, used * 100 / total);
-    var buf: [32]u8 = undefined;
-    const detail = if (total == 0)
-        "-- free"
-    else
-        try std.fmt.allocPrint(arena, "{s} free", .{format.bytes(&buf, free)});
-    return .{ .label = label, .percent = pct, .detail = detail, .state = health.classify(pct, thresholds) };
-}
-
-fn readSmall(io: Io, path: []const u8, buf: []u8) ![]const u8 {
-    var file = try Io.Dir.openFileAbsolute(io, path, .{});
-    defer file.close(io);
-    var fr = file.reader(io, &.{});
-    const n = try fr.interface.readSliceShort(buf);
-    return buf[0..n];
-}
-
-fn readHostname(io: Io, buf: []u8) ![]const u8 {
-    return std.mem.trim(u8, try readSmall(io, "/etc/hostname", buf), " \t\r\n");
-}
-
-fn readUptime(io: Io) !u64 {
-    var buf: [128]u8 = undefined;
-    const text = try readSmall(io, "/proc/uptime", &buf);
-    const space = std.mem.indexOfScalar(u8, text, ' ') orelse text.len;
-    const dot = std.mem.indexOfScalar(u8, text[0..space], '.') orelse space;
-    return std.fmt.parseInt(u64, text[0..dot], 10) catch 0;
-}
-
-fn readLoadAvg(io: Io) !f64 {
-    var buf: [128]u8 = undefined;
-    const text = try readSmall(io, "/proc/loadavg", &buf);
-    const space = std.mem.indexOfScalar(u8, text, ' ') orelse return error.BadLoadAvg;
-    return std.fmt.parseFloat(f64, text[0..space]);
-}
-
-fn readMemInfo(io: Io) !render.MemInfo {
-    var buf: [4096]u8 = undefined;
-    const text = try readSmall(io, "/proc/meminfo", &buf);
-    return .{
-        .total = format.parseMemKb(text, "MemTotal:") * 1024,
-        .available = format.parseMemKb(text, "MemAvailable:") * 1024,
-    };
-}
-
-fn readDiskFree(path: []const u8) !render.DiskUsage {
-    if (builtin.os.tag != .linux) return .{ .total = 0, .free = 0 };
-
-    const linux = std.os.linux;
-    var path_buf: [std.posix.PATH_MAX]u8 = undefined;
-    if (path.len >= path_buf.len) return error.NameTooLong;
-    @memcpy(path_buf[0..path.len], path);
-    path_buf[path.len] = 0;
-
-    var st: StatFs = undefined;
-    const rc = linux.syscall2(.statfs, @intFromPtr(&path_buf), @intFromPtr(&st));
-    switch (linux.errno(rc)) {
-        .SUCCESS => {},
-        else => return error.StatFsFailed,
-    }
-    const bs: u64 = @intCast(st.f_bsize);
-    return .{ .total = st.f_blocks *% bs, .free = st.f_bavail *% bs };
-}
-
-// Linux statfs (64-bit). Stable layout on x86_64/aarch64/riscv64.
-const StatFs = extern struct {
-    f_type: i64,
-    f_bsize: i64,
-    f_blocks: u64,
-    f_bfree: u64,
-    f_bavail: u64,
-    f_files: u64,
-    f_ffree: u64,
-    f_fsid: [2]i32,
-    f_namelen: i64,
-    f_frsize: i64,
-    f_flags: i64,
-    f_spare: [4]i64,
-};

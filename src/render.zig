@@ -3,6 +3,7 @@ const Io = std.Io;
 
 const format = @import("format.zig");
 const health = @import("health.zig");
+const metric = @import("metric.zig");
 
 pub const ServiceCard = struct {
     name: []const u8,
@@ -15,21 +16,8 @@ pub const ServiceSummary = struct {
     text: []const u8 = "",
 };
 
-pub const DiskUsage = struct { total: u64, free: u64 };
-pub const MemInfo = struct { total: u64, available: u64 };
-
-pub const MetricRow = struct {
-    label: []const u8,
-    percent: ?u64,
-    detail: []const u8,
-    state: health.State,
-};
-
-pub const Metrics = struct {
-    cpu: MetricRow,
-    memory: MetricRow,
-    disks: []const MetricRow,
-};
+pub const MetricRow = metric.Row;
+pub const Metrics = metric.Snapshot;
 
 pub const Services = struct {
     items: []const ServiceCard,
@@ -85,12 +73,17 @@ pub fn page(w: *Io.Writer, template: []const u8, data: Page) !void {
 }
 
 pub fn metrics(w: *Io.Writer, data: Metrics) !void {
-    try w.writeAll("<section id=\"metrics\"><h2>System</h2><ul id=\"system\">");
-    try metricRow(w, data.cpu);
-    try metricRow(w, data.memory);
-    try w.writeAll("</ul><h2>Disks</h2><ul id=\"disks\">");
-    for (data.disks) |row| try metricRow(w, row);
-    try w.writeAll("</ul></section>");
+    try w.writeAll("<section id=\"metrics\">");
+    for (data.sections) |section| {
+        try w.writeAll("<h2>");
+        try format.escape(w, section.title);
+        try w.writeAll("</h2><ul id=\"");
+        try format.escape(w, section.id);
+        try w.writeAll("\">");
+        for (section.rows) |row| try metricRow(w, row);
+        try w.writeAll("</ul>");
+    }
+    try w.writeAll("</section>");
 }
 
 pub fn services(w: *Io.Writer, data: Services) !void {
@@ -183,20 +176,24 @@ test "metric row rendering preserves classes width and escaping" {
 }
 
 test "metrics rendering preserves morph targets" {
+    const system = [_]MetricRow{
+        .{ .label = "CPU", .percent = 12, .detail = "load 0.25", .state = .ok },
+        .{ .label = "Memory", .percent = 75, .detail = "1.0 GiB free", .state = .warn },
+    };
     const disks = [_]MetricRow{.{
         .label = "/srv",
         .percent = 42,
         .detail = "58.0 GiB free",
         .state = .ok,
     }};
+    const sections = [_]metric.Section{
+        .{ .id = "system", .title = "System", .rows = &system },
+        .{ .id = "disks", .title = "Disks", .rows = &disks },
+    };
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
 
-    try metrics(&aw.writer, .{
-        .cpu = .{ .label = "CPU", .percent = 12, .detail = "load 0.25", .state = .ok },
-        .memory = .{ .label = "Memory", .percent = 75, .detail = "1.0 GiB free", .state = .warn },
-        .disks = &disks,
-    });
+    try metrics(&aw.writer, .{ .sections = &sections });
 
     const html = aw.written();
     try std.testing.expect(std.mem.indexOf(u8, html, "<section id=\"metrics\">") != null);

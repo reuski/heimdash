@@ -1,37 +1,55 @@
 # Agent Instructions
 
-## Source Of Truth
+## Source
 
-- `README.md`: user-facing commands, config, routes, and module usage.
-- `AGENTS.md`: repo rules for AI agents.
+- `README.md`: commands, config, routes, NixOS module.
+- `AGENTS.md`: repo rules.
 
-## Hard Rules
+## Invariants
 
 - Zig stdlib only.
-- Keep `build.zig.zon` `.dependencies` empty.
-- Embed every file under `assets/` with `@embedFile`.
+- `build.zig.zon` `.dependencies` stays empty.
+- One binary, one process.
+- No sidecars.
+- No separate frontend service.
+- Assets under `assets/` use `@embedFile`.
 - No runtime asset paths.
-- Treat JSON config as the Nix-to-Zig contract.
-- Add config fields only; never rename or reorder existing fields.
-- Generated JSON may contain credential names, never credential paths or values.
-- Resolve systemd credentials from `$CREDENTIALS_DIRECTORY`.
+- JSON config is the Nix-to-Zig contract.
+- Add config fields only.
+- Never rename or reorder existing config fields.
+- Generated JSON may contain credential names only.
+- Generated JSON must not contain credential paths or values.
+- Resolve credentials from `$CREDENTIALS_DIRECTORY`.
+
+## Runtime
+
+- Dynamic responses: `text/event-stream`.
+- Datastar event: `datastar-patch-elements`.
+- Live route: `GET /stream`.
+- Preserve morph targets:
+  - `section#metrics`
+  - `ul#system`
+  - `ul#disks`
+  - `ul#services`
 - Keep reachability state separate from summary state.
-- Dynamic responses use `text/event-stream` and `datastar-patch-elements`.
-- Never rename a Datastar morph target without updating every emitter.
-- Keep one arena per request and use `defer arena.deinit()`.
-- Keep one binary and one process. No sidecars or separate frontend service.
+- One arena per request.
+- Request arenas use `defer arena.deinit()`.
 
 ## Layout
 
-| Path           | Purpose                           |
-| -------------- | --------------------------------- |
-| `README.md`    | commands, config, routes, module  |
-| `flake.nix`    | Zig, ZLS, treefmt, package, shell |
-| `module.nix`   | NixOS module and generated config |
-| `build.zig`    | executable and test targets       |
-| `src/main.zig` | HTTP, IO, wiring                  |
-| `src/*.zig`    | pure helpers with colocated tests |
-| `assets/`      | embedded HTML, CSS, JS            |
+| Path              | Owner                                  |
+| ----------------- | -------------------------------------- |
+| `README.md`       | user reference                         |
+| `flake.nix`       | package, shell, checks                 |
+| `module.nix`      | NixOS module, generated config         |
+| `build.zig`       | executable and test targets            |
+| `src/main.zig`    | HTTP, SSE, sockets, credentials, glue  |
+| `src/host.zig`    | Linux host readers: `/proc`, `/sys`, `statfs` |
+| `src/metric.zig`  | metric rows, sections, pure math       |
+| `src/sampler.zig` | in-memory history, rate deltas         |
+| `src/summary.zig` | service summary adapters and parsers   |
+| `src/render.zig`  | HTML emitters                          |
+| `assets/`         | embedded HTML, CSS, JS                 |
 
 ## Commands
 
@@ -45,36 +63,50 @@ nix build .#default
 nix fmt
 ```
 
-No local Nix requirement. CI is the canonical Nix check.
+- Local Nix optional.
+- CI owns canonical Nix validation.
 
 ## Testing
 
-- Pure logic belongs in modules such as `src/health.zig`, `src/format.zig`, and `src/credential.zig`.
+- Pure logic: `src/health.zig`, `src/format.zig`, `src/credential.zig`, `src/metric.zig`, parsers.
+- Side-effect readers stay thin.
+- Parser, formatter, classifier tests live next to source.
+- Unit tests stay out of `src/main.zig`.
 - New pure modules must be added to the `inline for` test list in `build.zig`.
-- Keep unit tests out of `src/main.zig`.
-- Keep side-effecting readers thin; test the parser, formatter, or classifier they feed.
-- After code edits, run `zig build test`, `zig build`, and `git diff --check`.
+- After code edits: `zig build test`, `zig build`, `git diff --check`.
 
-## Code Style
+## Style
 
-- Isolate side effects to IO edges: `/proc`, `statfs`, sockets, HTTP, and credentials.
-- Prefer immutable values and small pure helpers.
+- Isolate side effects to IO edges.
+- Prefer immutable values.
+- Prefer small pure helpers.
 - Use precise names.
-- No comments unless algorithmic rationale is not obvious.
-- No premature abstraction, compatibility shims, unused placeholders, or dead code.
+- No comments except non-obvious algorithmic rationale.
+- No compatibility shims.
+- No dead code.
+- No unused placeholders.
+- No premature abstraction.
 
-## UI Rules
+## UI
 
 - Retro mainframe CRT terminal.
 - Monospace only.
 - One accent channel on near-black.
-- Colors live in `:root` custom properties.
-- No hard-coded rule colors, depth shadows, glass, emoji, or decorative gradients except scanlines, meters, and sweep.
-- Sharp chrome: 1px borders, hairline radius, labelled-rule section headers.
+- Colors in `:root` custom properties.
+- No hard-coded rule colors.
+- No depth shadows.
+- No glass.
+- No emoji.
+- No decorative gradients except scanlines, meters, sweep.
+- Sharp chrome: 1px borders, hairline radius, labelled-rule headers.
 - Sparse motion behind `prefers-reduced-motion`.
-- Preserve server morph hooks.
 - Visual restyles touch only `assets/index.html` and `assets/style.css`.
 
-## Scope Control
+## Docs
 
-- Keep repo docs host agnostic; consuming flakes own hostnames, domains, ports, mounts, and inventory.
+- Host agnostic.
+- Consuming flakes own hostnames, domains, ports, mounts, inventory.
+- Command-reference style.
+- Current behavior only.
+- No roadmap sections.
+- No stale planning references.

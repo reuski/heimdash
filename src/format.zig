@@ -13,6 +13,20 @@ pub fn bytes(buf: []u8, n: u64) []const u8 {
     return result catch "?";
 }
 
+pub fn bytesPerSecond(buf: []u8, n: u64) []const u8 {
+    var bytes_buf: [32]u8 = undefined;
+    return std.fmt.bufPrint(buf, "{s}/s", .{bytes(&bytes_buf, n)}) catch "?/s";
+}
+
+pub fn milliCelsius(buf: []u8, milli: i64) []const u8 {
+    const negative = milli < 0;
+    const abs: u64 = @intCast(if (negative) -milli else milli);
+    const whole = abs / 1000;
+    const tenth = (abs % 1000) / 100;
+    const sign = if (negative) "-" else "";
+    return std.fmt.bufPrint(buf, "{s}{d}.{d} C", .{ sign, whole, tenth }) catch "? C";
+}
+
 pub fn uptime(buf: []u8, seconds: u64) []const u8 {
     if (seconds == 0) return std.fmt.bufPrint(buf, "uptime unknown", .{}) catch "uptime unknown";
     const days = seconds / 86_400;
@@ -46,6 +60,18 @@ test "bytes scales units" {
     try std.testing.expectEqualStrings("1.0 KiB", bytes(&buf, 1024));
     try std.testing.expectEqualStrings("1.5 KiB", bytes(&buf, 1536));
     try std.testing.expectEqualStrings("1.0 GiB", bytes(&buf, 1024 * 1024 * 1024));
+}
+
+test "bytesPerSecond appends rate suffix" {
+    var buf: [40]u8 = undefined;
+    try std.testing.expectEqualStrings("0 B/s", bytesPerSecond(&buf, 0));
+    try std.testing.expectEqualStrings("1.0 KiB/s", bytesPerSecond(&buf, 1024));
+}
+
+test "milliCelsius formats tenths" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("42.1 C", milliCelsius(&buf, 42123));
+    try std.testing.expectEqualStrings("-5.0 C", milliCelsius(&buf, -5000));
 }
 
 test "uptime formats days, hours, minutes" {

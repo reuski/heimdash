@@ -1,0 +1,182 @@
+const std = @import("std");
+const builtin = @import("builtin");
+const Io = std.Io;
+
+const format = @import("format.zig");
+
+pub const Memory = struct { total: u64, available: u64 };
+pub const Disk = struct { total: u64, free: u64 };
+pub const Network = struct { rx_bytes: u64, tx_bytes: u64 };
+
+pub fn hostname(io: Io, buf: []u8) ![]const u8 {
+    return std.mem.trim(u8, try readSmall(io, "/etc/hostname", buf), " \t\r\n");
+}
+
+pub fn uptime(io: Io) !u64 {
+    try requireLinux();
+    var buf: [128]u8 = undefined;
+    const text = try readSmall(io, "/proc/uptime", &buf);
+    const space = std.mem.indexOfScalar(u8, text, ' ') orelse text.len;
+    const dot = std.mem.indexOfScalar(u8, text[0..space], '.') orelse space;
+    return std.fmt.parseInt(u64, text[0..dot], 10) catch 0;
+}
+
+pub fn loadAverage(io: Io) !f64 {
+    try requireLinux();
+    var buf: [128]u8 = undefined;
+    const text = try readSmall(io, "/proc/loadavg", &buf);
+    const space = std.mem.indexOfScalar(u8, text, ' ') orelse return error.BadLoadAvg;
+    return std.fmt.parseFloat(f64, text[0..space]);
+}
+
+pub fn memory(io: Io) !Memory {
+    try requireLinux();
+    var buf: [4096]u8 = undefined;
+    const text = try readSmall(io, "/proc/meminfo", &buf);
+    return .{
+        .total = format.parseMemKb(text, "MemTotal:") * 1024,
+        .available = format.parseMemKb(text, "MemAvailable:") * 1024,
+    };
+}
+
+pub fn temperature(io: Io) !i64 {
+    try requireLinux();
+    var best: ?i64 = null;
+    var i: usize = 0;
+    while (i < 32) : (i += 1) {
+        var path_buf: [80]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/sys/class/thermal/thermal_zone{d}/temp", .{i}) catch unreachable;
+        var value_buf: [64]u8 = undefined;
+        const text = readSmall(io, path, &value_buf) catch continue;
+        const value = parseTemperature(text) orelse continue;
+        if (value < -100_000 or value > 200_000) continue;
+        if (best == null or value > best.?) best = value;
+    }
+    return best orelse error.TemperatureUnavailable;
+}
+
+pub fn defaultInterface(io: Io, buf: []u8) ![]const u8 {
+    try requireLinux();
+    var text_buf: [4096]u8 = undefined;
+    const text = try readSmall(io, "/proc/net/route", &text_buf);
+    const iface = parseDefaultInterface(text) orelse return error.NetworkUnavailable;
+    if (iface.len >= buf.len) return error.NameTooLong;
+    @memcpy(buf[0..iface.len], iface);
+    return buf[0..iface.len];
+}
+
+pub fn network(io: Io, interface: []const u8) !Network {
+    try requireLinux();
+    var buf: [32 * 1024]u8 = undefined;
+    const text = try readSmall(io, "/proc/net/dev", &buf);
+    return parseNetwork(text, interface) orelse error.NetworkUnavailable;
+}
+
+pub fn disk(path: []const u8) !Disk {
+    try requireLinux();
+    const linux = std.os.linux;
+    var path_buf: [std.posix.PATH_MAX]u8 = undefined;
+    if (path.len >= path_buf.len) return error.NameTooLong;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+
+    var st: StatFs = undefined;
+    const rc = linux.syscall2(.statfs, @intFromPtr(&path_buf), @intFromPtr(&st));
+    switch (linux.errno(rc)) {
+        .SUCCESS => {},
+        else => return error.StatFsFailed,
+    }
+    const bs: u64 = @intCast(st.f_bsize);
+    return .{ .total = st.f_blocks *% bs, .free = st.f_bavail *% bs };
+}
+
+fn requireLinux() !void {
+    if (builtin.os.tag != .linux) return error.UnsupportedHost;
+}
+
+pub fn parseTemperature(text: []const u8) ?i64 {
+    const value = std.mem.trim(u8, text, " \t\r\n");
+    if (value.len == 0) return null;
+    return std.fmt.parseInt(i64, value, 10) catch null;
+}
+
+pub fn parseDefaultInterface(text: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const iface = fields.next() orelse continue;
+        const destination = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        if (!std.mem.eql(u8, destination, "00000000")) continue;
+        return iface;
+    }
+    return null;
+}
+
+pub fn parseNetwork(text: []const u8, interface: []const u8) ?Network {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t");
+        if (!std.mem.eql(u8, name, interface)) continue;
+
+        var fields = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t");
+        const rx = std.fmt.parseInt(u64, fields.next() orelse return null, 10) catch return null;
+        var skipped: usize = 0;
+        while (skipped < 7) : (skipped += 1) _ = fields.next() orelse return null;
+        const tx = std.fmt.parseInt(u64, fields.next() orelse return null, 10) catch return null;
+        return .{ .rx_bytes = rx, .tx_bytes = tx };
+    }
+    return null;
+}
+
+fn readSmall(io: Io, path: []const u8, buf: []u8) ![]const u8 {
+    var file = try Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    var fr = file.reader(io, &.{});
+    const n = try fr.interface.readSliceShort(buf);
+    return buf[0..n];
+}
+
+const StatFs = extern struct {
+    f_type: i64,
+    f_bsize: i64,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [2]i32,
+    f_namelen: i64,
+    f_frsize: i64,
+    f_flags: i64,
+    f_spare: [4]i64,
+};
+
+test "parseTemperature trims thermal zone values" {
+    try std.testing.expectEqual(@as(?i64, 42123), parseTemperature("42123\n"));
+    try std.testing.expectEqual(@as(?i64, -5000), parseTemperature(" -5000 "));
+    try std.testing.expectEqual(@as(?i64, null), parseTemperature("\n"));
+}
+
+test "parseDefaultInterface selects the default route" {
+    const text =
+        \\Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
+        \\lo 0000007F 00000000 0001 0 0 0 000000FF 0 0 0
+        \\enp1s0 00000000 0102A8C0 0003 0 0 100 00000000 0 0 0
+    ;
+    try std.testing.expectEqualStrings("enp1s0", parseDefaultInterface(text).?);
+}
+
+test "parseNetwork extracts rx and tx bytes" {
+    const text =
+        \\Inter-|   Receive                                                |  Transmit
+        \\ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+        \\    lo: 1000 1 0 0 0 0 0 0 2000 2 0 0 0 0 0 0
+        \\enp1s0: 123456 10 0 0 0 0 0 0 654321 20 0 0 0 0 0 0
+    ;
+    const counters = parseNetwork(text, "enp1s0").?;
+    try std.testing.expectEqual(@as(u64, 123456), counters.rx_bytes);
+    try std.testing.expectEqual(@as(u64, 654321), counters.tx_bytes);
+    try std.testing.expectEqual(@as(?Network, null), parseNetwork(text, "missing0"));
+}

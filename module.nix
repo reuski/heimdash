@@ -54,6 +54,7 @@ let
   );
   credentialNameIsSafe = name: name != "" && builtins.match ".*[/:].*" name == null;
   serviceEntityIsSet = service: service.entity == null || service.entity != "";
+  networkInterfaceIsSet = cfg.networkInterface == null || cfg.networkInterface != "";
   referencedCredentialsExist = lib.all (
     name: lib.hasAttr name cfg.credentials
   ) referencedCredentialNames;
@@ -67,6 +68,7 @@ let
       && thresholdIsOrdered cfg.thresholds.memory
       && thresholdIsOrdered cfg.thresholds.disk
       && lib.all thresholdIsOrdered cfg.thresholds.disks
+      && thresholdIsOrdered cfg.thresholds.temperature
     );
 
   configFile = (pkgs.formats.json { }).generate "heimdash.json" (
@@ -74,6 +76,7 @@ let
       inherit (cfg) listen mounts services;
     }
     // lib.optionalAttrs (cfg.thresholds != null) { inherit (cfg) thresholds; }
+    // lib.optionalAttrs (cfg.networkInterface != null) { inherit (cfg) networkInterface; }
   );
 in
 {
@@ -196,6 +199,11 @@ in
               default = [ ];
               description = "Per-mount disk health threshold overrides.";
             };
+            temperature = lib.mkOption {
+              type = thresholdType 75 85;
+              default = { };
+              description = "Temperature health thresholds in Celsius.";
+            };
           };
         }
       );
@@ -212,12 +220,24 @@ in
             critical = 97;
           }
         ];
+        temperature = {
+          warn = 75;
+          critical = 85;
+        };
       };
       description = ''
         Optional metric health thresholds in percent. Keys: cpu, memory, disk,
-        and disks (per-mount overrides). Omitted fields use built-in defaults
-        (cpu 75/90, memory 80/90, disk 80/90).
+        disks (per-mount overrides), and temperature in Celsius. Omitted fields
+        use built-in defaults (cpu 75/90, memory 80/90, disk 80/90,
+        temperature 75/85).
       '';
+    };
+
+    networkInterface = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Optional network interface for throughput metrics. Null uses the Linux default route interface.";
+      example = "enp1s0";
     };
   };
 
@@ -250,6 +270,10 @@ in
       {
         assertion = lib.all serviceEntityIsSet cfg.services;
         message = "services.heimdash.services entries with entity set must use a non-empty entity id.";
+      }
+      {
+        assertion = networkInterfaceIsSet;
+        message = "services.heimdash.networkInterface must be null or a non-empty interface name.";
       }
       {
         assertion = credentialNamesAreSafe;
