@@ -69,30 +69,26 @@ pub const Value = union(enum) {
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
-            .arr => |item| try w.print("v{s} | queue {d}", .{ item.version, item.queue_count }),
-            .prowlarr => |item| try w.print(
-                "v{s} | indexers {d} | health {d}",
-                .{ item.version, item.indexer_count, item.health_count },
-            ),
-            .jellyfin => |item| try w.print("v{s} | sessions {d}", .{ item.version, item.active_sessions }),
-            .adguard => |item| try w.print(
-                "protection {s} | queries {d} | blocked {d}",
-                .{ if (item.protection_enabled) "on" else "off", item.query_count, item.blocked_count },
-            ),
+            .arr => |item| try w.print("queue {d}", .{item.queue_count}),
+            .prowlarr => |item| {
+                try w.print("indexers {d}", .{item.indexer_count});
+                if (item.health_count > 0) try w.print(" // alerts {d}", .{item.health_count});
+            },
+            .jellyfin => |item| try w.print("streams {d}", .{item.active_sessions}),
+            .adguard => |item| if (item.protection_enabled) {
+                try w.print("blocked {d} / {d}", .{ item.blocked_count, item.query_count });
+            } else {
+                try w.writeAll("protection off");
+            },
             .qbittorrent => |item| {
                 var down_buf: [32]u8 = undefined;
                 var up_buf: [32]u8 = undefined;
-                try w.print(
-                    "{s} | down {s}/s | up {s}/s",
-                    .{
-                        item.version,
-                        format.bytes(&down_buf, item.download_speed),
-                        format.bytes(&up_buf, item.upload_speed),
-                    },
-                );
+                try writeRate(w, "↓", format.bytes(&down_buf, item.download_speed));
+                try w.writeAll(" ");
+                try writeRate(w, "↑", format.bytes(&up_buf, item.upload_speed));
             },
             .home_assistant => |item| {
-                try w.print("api ok | {s} {s}", .{ item.entity_name, item.entity_state });
+                try w.print("{s} {s}", .{ item.entity_name, item.entity_state });
                 if (item.entity_unit) |unit| try w.print(" {s}", .{unit});
             },
         }
@@ -366,6 +362,19 @@ pub fn parseHomeAssistant(allocator: std.mem.Allocator, status_json: []const u8,
         .entity_state = try allocator.dupe(u8, entity.state),
         .entity_unit = unit,
     };
+}
+
+fn writeRate(w: *Io.Writer, arrow: []const u8, speed: []const u8) !void {
+    try w.writeAll(arrow);
+    try w.writeAll("\u{00A0}");
+    if (std.mem.indexOfScalar(u8, speed, ' ')) |idx| {
+        try w.writeAll(speed[0..idx]);
+        try w.writeAll("\u{00A0}");
+        try w.writeAll(speed[idx + 1 ..]);
+    } else {
+        try w.writeAll(speed);
+    }
+    try w.writeAll("/s");
 }
 
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
@@ -656,25 +665,33 @@ test "Value writes compact summary lines" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     try (Value{ .arr = .{ .version = "4.0.17.2952", .queue_count = 3 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("v4.0.17.2952 | queue 3", aw.written());
+    try std.testing.expectEqualStrings("queue 3", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .prowlarr = .{ .version = "1.33.3.5065", .health_count = 2, .indexer_count = 7 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("v1.33.3.5065 | indexers 7 | health 2", aw.written());
+    try std.testing.expectEqualStrings("indexers 7 // alerts 2", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .prowlarr = .{ .version = "1.33.3.5065", .health_count = 0, .indexer_count = 7 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("indexers 7", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .jellyfin = .{ .version = "10.10.7", .active_sessions = 2 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("v10.10.7 | sessions 2", aw.written());
+    try std.testing.expectEqualStrings("streams 2", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .adguard = .{ .protection_enabled = true, .query_count = 1200, .blocked_count = 83 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("protection on | queries 1200 | blocked 83", aw.written());
+    try std.testing.expectEqualStrings("blocked 83 / 1200", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .adguard = .{ .protection_enabled = false, .query_count = 1200, .blocked_count = 83 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("protection off", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .qbittorrent = .{ .version = "v5.0.3", .download_speed = 1048576, .upload_speed = 2048 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("v5.0.3 | down 1.0 MiB/s | up 2.0 KiB/s", aw.written());
+    try std.testing.expectEqualStrings("↓\u{00A0}1.0\u{00A0}MiB/s ↑\u{00A0}2.0\u{00A0}KiB/s", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .home_assistant = .{ .entity_name = "Kitchen", .entity_state = "21.4", .entity_unit = "C" } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("api ok | Kitchen 21.4 C", aw.written());
+    try std.testing.expectEqualStrings("Kitchen 21.4 C", aw.written());
 }
