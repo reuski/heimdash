@@ -57,43 +57,43 @@ nix fmt
 
 ## Config Keys
 
-| Key | Default | Notes |
-| --- | --- | --- |
-| `listen` | required | bind address |
-| `mounts` | required | `statfs` usage rows |
-| `networkInterface` | Linux default route | down/up throughput source |
-| `services[].name` | required | display label |
-| `services[].url` | required | link target |
-| `services[].check` | `url` | reachability probe target |
-| `services[].kind` | none | summary adapter |
-| `services[].credential` | none | systemd credential name |
-| `services[].entity` | none | Home Assistant entity id |
-| `thresholds.cpu` | `75/90` | percent |
-| `thresholds.memory` | `80/90` | percent |
-| `thresholds.disk` | `80/90` | percent |
-| `thresholds.disks[]` | none | per-mount disk percent |
-| `thresholds.temperature` | `75/85` | Celsius |
+| Key                      | Default             | Notes                     |
+| ------------------------ | ------------------- | ------------------------- |
+| `listen`                 | required            | bind address              |
+| `mounts`                 | required            | `statfs` usage rows       |
+| `networkInterface`       | Linux default route | down/up throughput source |
+| `services[].name`        | required            | display label             |
+| `services[].url`         | required            | link target               |
+| `services[].check`       | `url`               | reachability probe target |
+| `services[].kind`        | none                | summary adapter           |
+| `services[].credential`  | none                | systemd credential name   |
+| `services[].entity`      | none                | Home Assistant entity id  |
+| `thresholds.cpu`         | `75/90`             | percent                   |
+| `thresholds.memory`      | `80/90`             | percent                   |
+| `thresholds.disk`        | `80/90`             | percent                   |
+| `thresholds.disks[]`     | none                | per-mount disk percent    |
+| `thresholds.temperature` | `75/85`             | Celsius                   |
 
 ## Service Kinds
 
-| Kind | Credential | Summary |
-| --- | --- | --- |
-| `adguard` | optional `username:password` | protection, DNS stats |
-| `jellyfin` | API key | active streams |
-| `sonarr` | API key | queue count |
-| `radarr` | API key | queue count |
-| `prowlarr` | API key | indexers, health alerts |
-| `qbittorrent` | `username:password` | transfer rates |
-| `home_assistant` | token + `entity` | entity state |
+| Kind             | Credential                   | Summary                 |
+| ---------------- | ---------------------------- | ----------------------- |
+| `adguard`        | optional `username:password` | protection, DNS stats   |
+| `jellyfin`       | API key                      | active streams          |
+| `sonarr`         | API key                      | queue count             |
+| `radarr`         | API key                      | queue count             |
+| `prowlarr`       | API key                      | indexers, health alerts |
+| `qbittorrent`    | `username:password`          | transfer rates          |
+| `home_assistant` | token + `entity`             | entity state            |
 
 ## Credentials
 
-| Surface | Value |
-| --- | --- |
-| Nix option | `services.heimdash.credentials.<name>.path` |
-| systemd | `LoadCredential=<name>:<path>` |
-| JSON config | `"credential": "<name>"` |
-| runtime lookup | `$CREDENTIALS_DIRECTORY/<name>` |
+| Surface        | Value                                       |
+| -------------- | ------------------------------------------- |
+| Nix option     | `services.heimdash.credentials.<name>.path` |
+| systemd        | `LoadCredential=<name>:<path>`              |
+| JSON config    | `"credential": "<name>"`                    |
+| runtime lookup | `$CREDENTIALS_DIRECTORY/<name>`             |
 
 ## NixOS
 
@@ -134,12 +134,12 @@ nix fmt
 
 ## Routes
 
-| Method | Path | Response |
-| --- | --- | --- |
-| `GET` | `/` | HTML |
-| `GET` | `/stream` | `text/event-stream` Datastar patches |
-| `GET` | `/style.css` | embedded CSS |
-| `GET` | `/datastar.js` | embedded JS |
+| Method | Path           | Response                             |
+| ------ | -------------- | ------------------------------------ |
+| `GET`  | `/`            | HTML                                 |
+| `GET`  | `/stream`      | `text/event-stream` Datastar patches |
+| `GET`  | `/style.css`   | embedded CSS                         |
+| `GET`  | `/datastar.js` | embedded JS                          |
 
 ## License
 
