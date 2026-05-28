@@ -37,19 +37,19 @@
 
 ## Layout
 
-| Path              | Owner                                  |
-| ----------------- | -------------------------------------- |
-| `README.md`       | user reference                         |
-| `flake.nix`       | package, shell, checks                 |
-| `module.nix`      | NixOS module, generated config         |
-| `build.zig`       | executable and test targets            |
-| `src/main.zig`    | HTTP, SSE, sockets, credentials, glue  |
+| Path              | Owner                                         |
+| ----------------- | --------------------------------------------- |
+| `README.md`       | user reference                                |
+| `flake.nix`       | package, shell, checks                        |
+| `module.nix`      | NixOS module, generated config                |
+| `build.zig`       | executable and test targets                   |
+| `src/main.zig`    | HTTP, SSE, sockets, credentials, glue         |
 | `src/host.zig`    | Linux host readers: `/proc`, `/sys`, `statfs` |
-| `src/metric.zig`  | metric rows, sections, pure math       |
-| `src/sampler.zig` | in-memory history, rate deltas         |
-| `src/summary.zig` | service summary adapters and parsers   |
-| `src/render.zig`  | HTML emitters                          |
-| `assets/`         | embedded HTML, CSS, JS                 |
+| `src/metric.zig`  | metric rows, sections, pure math              |
+| `src/sampler.zig` | in-memory history, rate deltas                |
+| `src/summary.zig` | service summary adapters and parsers          |
+| `src/render.zig`  | HTML emitters                                 |
+| `assets/`         | embedded HTML, CSS, JS                        |
 
 ## Commands
 
