@@ -44,10 +44,9 @@
   --text-md: 1rem;
   --text-lg: 1.25rem;
 
-  --bar-h: 1.125rem;
   --dot: 0.5rem;
-  --led-cell: 0.4375rem;
-  --led-gap: 0.125rem;
+  --meter-cells: 32;
+  --meter-gap: 0.125rem;
   --title-gap: 6.5rem;
   --bracket: 1.125rem;
   --tile-min: 12rem;
@@ -364,9 +363,9 @@ ul {
   --metric-state-glow: var(--glow-unknown);
 
   display: grid;
-  grid-template-columns: minmax(7rem, 11rem) minmax(9rem, 1fr) minmax(
-      6.5rem,
-      9rem
+  grid-template-columns: minmax(10ch, 18ch) minmax(12rem, 1fr) minmax(
+      18ch,
+      22ch
     );
   align-items: center;
   gap: var(--space-md);
@@ -406,38 +405,42 @@ ul {
 }
 
 #metrics .bar {
-  position: relative;
-  height: var(--bar-h);
-  overflow: hidden;
-  background: var(--led-off);
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  gap: var(--meter-gap);
+  padding: var(--meter-gap);
+  background: var(--panel-raised);
   border: 1px solid var(--border-strong);
   box-shadow: inset 0 0 0 1px var(--meter-inset);
 }
 
-#metrics .bar > span {
-  display: block;
-  height: 100%;
+#metrics .meter-row {
+  display: grid;
+  grid-template-columns: repeat(var(--meter-cells), minmax(0, 1fr));
+  gap: var(--meter-gap);
+  min-width: 0;
+}
+
+#metrics .led {
+  min-width: 0;
+  aspect-ratio: 1;
+  background: var(--led-off);
+}
+
+#metrics .led.is-lit {
   background: var(--metric-state-color);
   box-shadow: 0 0 6px var(--metric-state-glow);
 }
 
-#metrics .bar::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  background:
-    repeating-linear-gradient(
-      90deg,
-      transparent 0 var(--led-cell),
-      var(--panel) var(--led-cell) calc(var(--led-cell) + var(--led-gap))
-    ),
-    repeating-linear-gradient(
-      180deg,
-      transparent 0 var(--led-cell),
-      var(--panel) var(--led-cell) calc(var(--led-cell) + var(--led-gap))
-    );
+#metrics .meter-row.is-down .led.is-lit {
+  background: var(--status-ok);
+  box-shadow: 0 0 6px var(--glow-ok);
+}
+
+#metrics .meter-row.is-up .led.is-lit {
+  background: var(--status-warn);
+  box-shadow: 0 0 6px var(--glow-warn);
 }
 
 #metrics .free {
@@ -569,6 +572,10 @@ ul {
 }
 
 @media (max-width: 720px) {
+  :root {
+    --meter-gap: 1px;
+  }
+
   main {
     padding: var(--space-xs);
   }

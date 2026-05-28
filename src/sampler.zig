@@ -23,8 +23,9 @@ pub const Sampler = struct {
     const cpu_index = 0;
     const memory_index = 1;
     const temperature_index = 2;
-    const network_index = 3;
-    const disk_start_index = 4;
+    const network_down_index = 3;
+    const network_up_index = 4;
+    const disk_start_index = 5;
     const system_row_count = 4;
 
     pub fn init(allocator: std.mem.Allocator, cfg: Config) !Sampler {
@@ -119,29 +120,47 @@ pub const Sampler = struct {
 
     fn networkRow(self: *Sampler, arena: std.mem.Allocator, io: Io, configured_interface: ?[]const u8, now: Io.Timestamp) !metric.Row {
         var interface_buf: [64]u8 = undefined;
-        const interface = configured_interface orelse host.defaultInterface(io, &interface_buf) catch return unknownRow(arena, &self.histories[network_index], "Network", "down --/s // up --/s");
-        const counters = host.network(io, interface) catch return unknownRow(arena, &self.histories[network_index], "Network", "down --/s // up --/s");
+        const interface = configured_interface orelse host.defaultInterface(io, &interface_buf) catch return self.networkUnknownRow(arena);
+        const counters = host.network(io, interface) catch return self.networkUnknownRow(arena);
+        const link_speed = host.linkSpeed(io, interface) catch null;
 
         const rates = self.networkRates(interface, counters, now);
-        var down_buf: [40]u8 = undefined;
-        var up_buf: [40]u8 = undefined;
-        const total_rate = rates.rx_bytes_per_second +| rates.tx_bytes_per_second;
-        const max_rate = @max(total_rate, self.histories[network_index].max());
+        var down_buf: [24]u8 = undefined;
+        var up_buf: [24]u8 = undefined;
+        const segments = try arena.alloc(metric.Segment, 2);
+        segments[0] = .{ .signal = .down, .percent = networkPercent(rates.rx_bytes_per_second, link_speed) };
+        segments[1] = .{ .signal = .up, .percent = networkPercent(rates.tx_bytes_per_second, link_speed) };
         const detail = try std.fmt.allocPrint(
             arena,
-            "{s} down {s} // up {s}",
+            "{s} {s} {s} {s}",
             .{
-                interface,
-                format.bytesPerSecond(&down_buf, rates.rx_bytes_per_second),
-                format.bytesPerSecond(&up_buf, rates.tx_bytes_per_second),
+                format.download_marker,
+                format.compactBytesPerSecond(&down_buf, rates.rx_bytes_per_second),
+                format.upload_marker,
+                format.compactBytesPerSecond(&up_buf, rates.tx_bytes_per_second),
             },
         );
+        const history = try self.histories[network_down_index].pushSnapshot(arena, rates.rx_bytes_per_second);
+        self.histories[network_up_index].push(rates.tx_bytes_per_second);
         return .{
             .label = "Network",
-            .percent = metric.relativePercent(total_rate, max_rate),
+            .percent = null,
             .detail = detail,
             .state = .ok,
-            .history = try self.histories[network_index].pushSnapshot(arena, total_rate),
+            .history = history,
+            .segments = segments,
+        };
+    }
+
+    fn networkUnknownRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
+        self.histories[network_down_index].push(null);
+        self.histories[network_up_index].push(null);
+        return .{
+            .label = "Network",
+            .percent = null,
+            .detail = format.download_marker ++ " --/s " ++ format.upload_marker ++ " --/s",
+            .state = .unknown,
+            .history = try self.histories[network_down_index].snapshot(arena),
         };
     }
 
@@ -241,6 +260,12 @@ fn diskUsage(path: []const u8) !Usage {
     return .{ .total = value.total, .free = value.free };
 }
 
+fn networkPercent(rate: u64, link_speed: ?u64) u64 {
+    if (rate == 0) return 0;
+    const capacity = link_speed orelse return 0;
+    return @max(1, metric.scaledPercent(rate, capacity) orelse 0);
+}
+
 test "history keeps newest values in order" {
     var history: History = .{};
     var i: u64 = 0;
@@ -278,4 +303,12 @@ test "network rates reset on first sample and interface change" {
         sampler.networkRates("eth0", .{ .rx_bytes = 150, .tx_bytes = 300 }, second),
     );
     try std.testing.expectEqual(NetworkRates{}, sampler.networkRates("wlan0", .{ .rx_bytes = 1000, .tx_bytes = 1000 }, second));
+}
+
+test "network percent scales against link speed" {
+    try std.testing.expectEqual(@as(u64, 0), networkPercent(50, null));
+    try std.testing.expectEqual(@as(u64, 0), networkPercent(0, 100));
+    try std.testing.expectEqual(@as(u64, 1), networkPercent(1, 1000));
+    try std.testing.expectEqual(@as(u64, 50), networkPercent(50, 100));
+    try std.testing.expectEqual(@as(u64, 100), networkPercent(120, 100));
 }

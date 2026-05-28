@@ -80,13 +80,7 @@ pub const Value = union(enum) {
             } else {
                 try w.writeAll("protection off");
             },
-            .qbittorrent => |item| {
-                var down_buf: [32]u8 = undefined;
-                var up_buf: [32]u8 = undefined;
-                try writeRate(w, "↓", format.bytes(&down_buf, item.download_speed));
-                try w.writeAll(" ");
-                try writeRate(w, "↑", format.bytes(&up_buf, item.upload_speed));
-            },
+            .qbittorrent => |item| try format.transferSpeeds(w, item.download_speed, item.upload_speed),
             .home_assistant => |item| {
                 try w.print("{s} {s}", .{ item.entity_name, item.entity_state });
                 if (item.entity_unit) |unit| try w.print(" {s}", .{unit});
@@ -362,19 +356,6 @@ pub fn parseHomeAssistant(allocator: std.mem.Allocator, status_json: []const u8,
         .entity_state = try allocator.dupe(u8, entity.state),
         .entity_unit = unit,
     };
-}
-
-fn writeRate(w: *Io.Writer, arrow: []const u8, speed: []const u8) !void {
-    try w.writeAll(arrow);
-    try w.writeAll("\u{00A0}");
-    if (std.mem.indexOfScalar(u8, speed, ' ')) |idx| {
-        try w.writeAll(speed[0..idx]);
-        try w.writeAll("\u{00A0}");
-        try w.writeAll(speed[idx + 1 ..]);
-    } else {
-        try w.writeAll(speed);
-    }
-    try w.writeAll("/s");
 }
 
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
@@ -689,7 +670,7 @@ test "Value writes compact summary lines" {
 
     aw.clearRetainingCapacity();
     try (Value{ .qbittorrent = .{ .version = "v5.0.3", .download_speed = 1048576, .upload_speed = 2048 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("↓\u{00A0}1.0\u{00A0}MiB/s ↑\u{00A0}2.0\u{00A0}KiB/s", aw.written());
+    try std.testing.expectEqualStrings("\u{25BE} 1.0M/s \u{25B4} 2.0K/s", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .home_assistant = .{ .entity_name = "Kitchen", .entity_state = "21.4", .entity_unit = "C" } }).write(&aw.writer);

@@ -72,6 +72,15 @@ pub fn network(io: Io, interface: []const u8) !Network {
     return parseNetwork(text, interface) orelse error.NetworkUnavailable;
 }
 
+pub fn linkSpeed(io: Io, interface: []const u8) !u64 {
+    try requireLinux();
+    var path_buf: [std.posix.PATH_MAX]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "/sys/class/net/{s}/speed", .{interface}) catch return error.NameTooLong;
+    var buf: [64]u8 = undefined;
+    const text = try readSmall(io, path, &buf);
+    return parseLinkSpeed(text) orelse error.NetworkUnavailable;
+}
+
 pub fn disk(path: []const u8) !Disk {
     try requireLinux();
     const linux = std.os.linux;
@@ -130,6 +139,15 @@ pub fn parseNetwork(text: []const u8, interface: []const u8) ?Network {
     return null;
 }
 
+pub fn parseLinkSpeed(text: []const u8) ?u64 {
+    const value = std.mem.trim(u8, text, " \t\r\n");
+    if (value.len == 0) return null;
+    const megabits = std.fmt.parseInt(i64, value, 10) catch return null;
+    if (megabits <= 0) return null;
+    const bytes_per_second = @as(u128, @intCast(megabits)) * 1_000_000 / 8;
+    return @intCast(@min(bytes_per_second, std.math.maxInt(u64)));
+}
+
 fn readSmall(io: Io, path: []const u8, buf: []u8) ![]const u8 {
     var file = try Io.Dir.openFileAbsolute(io, path, .{});
     defer file.close(io);
@@ -179,4 +197,12 @@ test "parseNetwork extracts rx and tx bytes" {
     try std.testing.expectEqual(@as(u64, 123456), counters.rx_bytes);
     try std.testing.expectEqual(@as(u64, 654321), counters.tx_bytes);
     try std.testing.expectEqual(@as(?Network, null), parseNetwork(text, "missing0"));
+}
+
+test "parseLinkSpeed converts sysfs megabits to bytes per second" {
+    try std.testing.expectEqual(@as(?u64, 125_000_000), parseLinkSpeed("1000\n"));
+    try std.testing.expectEqual(@as(?u64, 1_250_000_000), parseLinkSpeed("10000"));
+    try std.testing.expectEqual(@as(?u64, null), parseLinkSpeed("-1\n"));
+    try std.testing.expectEqual(@as(?u64, null), parseLinkSpeed("0\n"));
+    try std.testing.expectEqual(@as(?u64, null), parseLinkSpeed("\n"));
 }

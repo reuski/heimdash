@@ -2,12 +2,20 @@ const std = @import("std");
 
 const health = @import("health.zig");
 
+pub const Signal = enum { down, up };
+
+pub const Segment = struct {
+    signal: Signal,
+    percent: u64,
+};
+
 pub const Row = struct {
     label: []const u8,
     percent: ?u64,
     detail: []const u8,
     state: health.State,
     history: []const ?u64 = &.{},
+    segments: []const Segment = &.{},
 };
 
 pub const Section = struct {

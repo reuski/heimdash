@@ -19,6 +19,8 @@ pub const ServiceSummary = struct {
 pub const MetricRow = metric.Row;
 pub const Metrics = metric.Snapshot;
 
+const meter_cell_count = 32;
+
 pub const Services = struct {
     items: []const ServiceCard,
     states: ?[]const ServiceReachability = null,
@@ -125,9 +127,52 @@ fn metricRow(w: *Io.Writer, row: MetricRow) !void {
     try w.writeAll(health.cssClass(row.state));
     try w.writeAll("\"><span class=\"label\">");
     try format.escape(w, row.label);
-    try w.print("</span><span class=\"bar\"><span style=\"width:{d}%\"></span></span><span class=\"free\">", .{row.percent orelse 0});
+    try w.writeAll("</span>");
+    try metricBar(w, row);
+    try w.writeAll("<span class=\"free\">");
     try format.escape(w, row.detail);
     try w.writeAll("</span></li>");
+}
+
+fn metricBar(w: *Io.Writer, row: MetricRow) !void {
+    if (row.segments.len == 0) {
+        try w.writeAll("<span class=\"bar is-led\">");
+        try meterRow(w, "is-single", row.percent orelse 0);
+        try meterRow(w, "is-single", row.percent orelse 0);
+        try w.writeAll("</span>");
+        return;
+    }
+
+    try w.writeAll("<span class=\"bar is-led is-split\">");
+    for (row.segments) |segment| {
+        try meterRow(w, signalClass(segment.signal), segment.percent);
+    }
+    try w.writeAll("</span>");
+}
+
+fn meterRow(w: *Io.Writer, class: []const u8, percent: u64) !void {
+    const lit = litCellCount(percent);
+    try w.print("<span class=\"meter-row {s}\">", .{class});
+    for (0..meter_cell_count) |i| {
+        if (i < lit) {
+            try w.writeAll("<span class=\"led is-lit\"></span>");
+        } else {
+            try w.writeAll("<span class=\"led\"></span>");
+        }
+    }
+    try w.writeAll("</span>");
+}
+
+fn litCellCount(percent: u64) usize {
+    const pct = @min(percent, 100);
+    return @intCast((@as(u128, pct) * meter_cell_count + 99) / 100);
+}
+
+fn signalClass(signal: metric.Signal) []const u8 {
+    return switch (signal) {
+        .down => "is-down",
+        .up => "is-up",
+    };
 }
 
 test "service card rendering preserves state summary and escaping" {
@@ -169,10 +214,55 @@ test "metric row rendering preserves classes width and escaping" {
         .state = .unknown,
     });
 
-    try std.testing.expectEqualStrings(
-        "<li class=\"is-unknown\"><span class=\"label\">Disk &lt;root&gt;</span><span class=\"bar\"><span style=\"width:0%\"></span></span><span class=\"free\">-- free</span></li>",
-        aw.written(),
-    );
+    const html = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, html, "<li class=\"is-unknown\"><span class=\"label\">Disk &lt;root&gt;</span>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"bar is-led\">") != null);
+    try std.testing.expectEqual(@as(usize, 2), countOccurrences(html, "meter-row is-single"));
+    try std.testing.expectEqual(@as(usize, meter_cell_count * 2), countOccurrences(html, "class=\"led"));
+    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"free\">-- free</span></li>") != null);
+}
+
+test "metric row rendering supports split meter segments" {
+    const segments = [_]metric.Segment{
+        .{ .signal = .down, .percent = 12 },
+        .{ .signal = .up, .percent = 4 },
+    };
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    try metricRow(&aw.writer, .{
+        .label = "Network",
+        .percent = null,
+        .detail = "\u{25BE} 1.0M/s \u{25B4} 512B/s",
+        .state = .ok,
+        .segments = &segments,
+    });
+
+    const html = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"bar is-led is-split\">") != null);
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "meter-row is-down"));
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "meter-row is-up"));
+    try std.testing.expectEqual(@as(usize, meter_cell_count * 2), countOccurrences(html, "class=\"led"));
+    try std.testing.expectEqual(@as(usize, 6), countOccurrences(html, "class=\"led is-lit\""));
+    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"free\">\u{25BE} 1.0M/s \u{25B4} 512B/s</span></li>") != null);
+}
+
+test "meter cell counts round up visible values and cap at full scale" {
+    try std.testing.expectEqual(@as(usize, 0), litCellCount(0));
+    try std.testing.expectEqual(@as(usize, 1), litCellCount(1));
+    try std.testing.expectEqual(@as(usize, 16), litCellCount(50));
+    try std.testing.expectEqual(@as(usize, meter_cell_count), litCellCount(100));
+    try std.testing.expectEqual(@as(usize, meter_cell_count), litCellCount(120));
+}
+
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, i, needle)) |idx| {
+        count += 1;
+        i = idx + needle.len;
+    }
+    return count;
 }
 
 test "metrics rendering preserves morph targets" {

@@ -1,6 +1,9 @@
 const std = @import("std");
 const Io = std.Io;
 
+pub const download_marker = "\u{25BE}";
+pub const upload_marker = "\u{25B4}";
+
 pub fn bytes(buf: []u8, n: u64) []const u8 {
     const units = [_][]const u8{ "B", "KiB", "MiB", "GiB", "TiB", "PiB" };
     var value: f64 = @floatFromInt(n);
@@ -16,6 +19,29 @@ pub fn bytes(buf: []u8, n: u64) []const u8 {
 pub fn bytesPerSecond(buf: []u8, n: u64) []const u8 {
     var bytes_buf: [32]u8 = undefined;
     return std.fmt.bufPrint(buf, "{s}/s", .{bytes(&bytes_buf, n)}) catch "?/s";
+}
+
+pub fn compactBytesPerSecond(buf: []u8, n: u64) []const u8 {
+    const units = [_][]const u8{ "B", "K", "M", "G", "T", "P" };
+    var value: f64 = @floatFromInt(n);
+    var unit: usize = 0;
+    while (value >= 1024.0 and unit + 1 < units.len) : (unit += 1) value /= 1024.0;
+    const result = if (unit == 0)
+        std.fmt.bufPrint(buf, "{d:.0}{s}/s", .{ value, units[unit] })
+    else
+        std.fmt.bufPrint(buf, "{d:.1}{s}/s", .{ value, units[unit] });
+    return result catch "?/s";
+}
+
+pub fn transferSpeeds(w: *Io.Writer, down: u64, up: u64) !void {
+    var down_buf: [24]u8 = undefined;
+    var up_buf: [24]u8 = undefined;
+    try w.print("{s} {s} {s} {s}", .{
+        download_marker,
+        compactBytesPerSecond(&down_buf, down),
+        upload_marker,
+        compactBytesPerSecond(&up_buf, up),
+    });
 }
 
 pub fn milliCelsius(buf: []u8, milli: i64) []const u8 {
@@ -66,6 +92,21 @@ test "bytesPerSecond appends rate suffix" {
     var buf: [40]u8 = undefined;
     try std.testing.expectEqualStrings("0 B/s", bytesPerSecond(&buf, 0));
     try std.testing.expectEqualStrings("1.0 KiB/s", bytesPerSecond(&buf, 1024));
+}
+
+test "compactBytesPerSecond uses short rate units" {
+    var buf: [24]u8 = undefined;
+    try std.testing.expectEqualStrings("0B/s", compactBytesPerSecond(&buf, 0));
+    try std.testing.expectEqualStrings("512B/s", compactBytesPerSecond(&buf, 512));
+    try std.testing.expectEqualStrings("1.0K/s", compactBytesPerSecond(&buf, 1024));
+    try std.testing.expectEqualStrings("1.5M/s", compactBytesPerSecond(&buf, 1536 * 1024));
+}
+
+test "transferSpeeds writes compact down and up markers" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try transferSpeeds(&aw.writer, 1048576, 2048);
+    try std.testing.expectEqualStrings("\u{25BE} 1.0M/s \u{25B4} 2.0K/s", aw.written());
 }
 
 test "milliCelsius formats tenths" {
