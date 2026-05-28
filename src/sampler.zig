@@ -196,7 +196,7 @@ fn unknownRow(arena: std.mem.Allocator, history: *History, label: []const u8, de
 }
 
 const History = struct {
-    values: [history_capacity]?u64 = [_]?u64{null} ** history_capacity,
+    values: [history_capacity]?u64 = undefined,
     start: usize = 0,
     len: usize = 0,
 
