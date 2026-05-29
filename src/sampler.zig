@@ -7,6 +7,7 @@ const host = @import("host.zig");
 const metric = @import("metric.zig");
 
 pub const history_capacity = 120;
+pub const sample_interval_seconds = 15;
 
 pub const Config = struct {
     mounts: []const []const u8,
@@ -14,10 +15,27 @@ pub const Config = struct {
     network_interface: ?[]const u8 = null,
 };
 
+const Usage = struct { total: u64, free: u64 };
+const Cpu = struct { load: f64, ncpu: usize };
+const Net = struct { rx_rate: u64, tx_rate: u64, link_speed: ?u64 };
+
+const network_unknown_detail = format.download_marker ++ " --/s " ++ format.upload_marker ++ " --/s";
+
+/// Single background sampler. One `run` loop is the sole writer of `histories`,
+/// `last_network`, and the `latest` readings; request handlers only read through
+/// `snapshot`. This keeps the in-memory timeseries advancing at a fixed cadence
+/// regardless of how many clients are connected, and keeps network rate deltas
+/// computed against a single consistent previous sample.
 pub const Sampler = struct {
     allocator: std.mem.Allocator,
+    cfg: Config,
     mutex: Io.Mutex = .init,
     histories: []History,
+    disks: []?Usage,
+    cpu: ?Cpu = null,
+    memory: ?Usage = null,
+    temperature: ?i64 = null,
+    network: ?Net = null,
     last_network: ?TimedNetwork = null,
 
     const cpu_index = 0;
@@ -31,41 +49,62 @@ pub const Sampler = struct {
     pub fn init(allocator: std.mem.Allocator, cfg: Config) !Sampler {
         const histories = try allocator.alloc(History, disk_start_index + cfg.mounts.len);
         for (histories) |*history| history.* = .{};
-        return .{ .allocator = allocator, .histories = histories };
+        const disks = try allocator.alloc(?Usage, cfg.mounts.len);
+        @memset(disks, null);
+        return .{ .allocator = allocator, .cfg = cfg, .histories = histories, .disks = disks };
     }
 
     pub fn deinit(self: *Sampler) void {
         self.allocator.free(self.histories);
+        self.allocator.free(self.disks);
     }
 
-    pub fn snapshot(self: *Sampler, arena: std.mem.Allocator, io: Io, cfg: Config) !metric.Snapshot {
+    pub fn run(self: *Sampler, io: Io) void {
+        self.tick(io);
+        while (true) {
+            Io.sleep(io, .fromSeconds(sample_interval_seconds), .awake) catch return;
+            self.tick(io);
+        }
+    }
+
+    fn tick(self: *Sampler, io: Io) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        const now = Io.Timestamp.now(io, .awake);
+
+        self.cpu = sampleCpu(io);
+        self.memory = memoryUsage(io) catch null;
+        self.temperature = host.temperature(io) catch null;
+        self.network = self.sampleNetwork(io, now);
+
+        self.histories[cpu_index].push(if (self.cpu) |cpu| cpuPercent(cpu) else null);
+        self.histories[memory_index].push(usagePercent(self.memory));
+        self.histories[temperature_index].push(if (self.temperature) |milli| temperatureSample(milli) else null);
+        if (self.network) |net| {
+            self.histories[network_down_index].push(net.rx_rate);
+            self.histories[network_up_index].push(net.tx_rate);
+        } else {
+            self.histories[network_down_index].push(null);
+            self.histories[network_up_index].push(null);
+        }
+        for (self.cfg.mounts, 0..) |mount, i| {
+            self.disks[i] = diskUsage(mount) catch null;
+            self.histories[disk_start_index + i].push(usagePercent(self.disks[i]));
+        }
+    }
+
+    pub fn snapshot(self: *Sampler, arena: std.mem.Allocator, io: Io) !metric.Snapshot {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
 
         const system_rows = try arena.alloc(metric.Row, system_row_count);
-        const disks = try arena.alloc(metric.Row, cfg.mounts.len);
-        const now = Io.Timestamp.now(io, .awake);
+        system_rows[0] = try self.cpuRow(arena);
+        system_rows[1] = try self.memoryRow(arena);
+        system_rows[2] = try self.temperatureRow(arena);
+        system_rows[3] = try self.networkRow(arena);
 
-        system_rows[0] = try self.cpuRow(arena, io, cfg.thresholds.cpu);
-        system_rows[1] = try usageRow(
-            arena,
-            &self.histories[memory_index],
-            "Memory",
-            memoryUsage(io) catch null,
-            cfg.thresholds.memory,
-        );
-        system_rows[2] = try self.temperatureRow(arena, io, cfg.thresholds.temperature);
-        system_rows[3] = try self.networkRow(arena, io, cfg.network_interface, now);
-
-        for (cfg.mounts, 0..) |mount, i| {
-            disks[i] = try usageRow(
-                arena,
-                &self.histories[disk_start_index + i],
-                mount,
-                diskUsage(mount) catch null,
-                health.diskThresholdFor(cfg.thresholds, mount),
-            );
-        }
+        const disks = try arena.alloc(metric.Row, self.cfg.mounts.len);
+        for (self.cfg.mounts, 0..) |mount, i| disks[i] = try self.diskRow(arena, mount, i);
 
         const sections = try arena.alloc(metric.Section, 2);
         sections[0] = .{ .id = "system", .title = "System", .rows = system_rows };
@@ -73,95 +112,79 @@ pub const Sampler = struct {
         return .{ .sections = sections };
     }
 
-    fn cpuRow(self: *Sampler, arena: std.mem.Allocator, io: Io, thresholds: health.Thresholds) !metric.Row {
-        const load = host.loadAverage(io) catch return unknownRow(arena, &self.histories[cpu_index], "CPU", "load --");
-        const ncpu = std.Thread.getCpuCount() catch return unknownRow(arena, &self.histories[cpu_index], "CPU", "load --");
-        const pct: u64 = @min(100, @as(u64, @intFromFloat(load / @as(f64, @floatFromInt(ncpu)) * 100.0)));
+    fn cpuRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
+        const history = try self.histories[cpu_index].snapshot(arena);
+        const cpu = self.cpu orelse return unknownRow("CPU", "load --", history);
+        const pct = cpuPercent(cpu);
         return .{
             .label = "CPU",
             .percent = pct,
-            .detail = try std.fmt.allocPrint(arena, "load {d:.2}", .{load}),
-            .state = health.classify(pct, thresholds),
-            .history = try self.histories[cpu_index].pushSnapshot(arena, pct),
+            .detail = try std.fmt.allocPrint(arena, "load {d:.2}", .{cpu.load}),
+            .state = health.classify(pct, self.cfg.thresholds.cpu),
+            .history = history,
         };
     }
 
-    fn usageRow(
-        arena: std.mem.Allocator,
-        history: *History,
-        label: []const u8,
-        usage: ?Usage,
-        thresholds: health.Thresholds,
-    ) !metric.Row {
-        const value = usage orelse return unknownRow(arena, history, label, "-- free");
-        const pct = metric.usedPercent(value.total, value.free);
-        var buf: [32]u8 = undefined;
-        return .{
-            .label = label,
-            .percent = pct,
-            .detail = try std.fmt.allocPrint(arena, "{s} free", .{format.bytes(&buf, value.free)}),
-            .state = health.classify(pct, thresholds),
-            .history = try history.pushSnapshot(arena, pct),
-        };
+    fn memoryRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
+        const history = try self.histories[memory_index].snapshot(arena);
+        return usageRow(arena, "Memory", self.memory, self.cfg.thresholds.memory, history);
     }
 
-    fn temperatureRow(self: *Sampler, arena: std.mem.Allocator, io: Io, thresholds: health.Thresholds) !metric.Row {
-        const temp_milli = host.temperature(io) catch return unknownRow(arena, &self.histories[temperature_index], "Temp", "-- C");
-        const temp_celsius: u64 = @intCast(@max(@as(i64, 0), @divTrunc(temp_milli, 1000)));
+    fn temperatureRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
+        const history = try self.histories[temperature_index].snapshot(arena);
+        const milli = self.temperature orelse return unknownRow("Temp", "-- C", history);
+        const celsius: u64 = @intCast(@max(@as(i64, 0), @divTrunc(milli, 1000)));
         var buf: [32]u8 = undefined;
         return .{
             .label = "Temp",
-            .percent = metric.scaledPercent(temp_celsius, thresholds.critical),
-            .detail = try arena.dupe(u8, format.milliCelsius(&buf, temp_milli)),
-            .state = health.classify(temp_celsius, thresholds),
-            .history = try self.histories[temperature_index].pushSnapshot(arena, @intCast(@max(@as(i64, 0), @divTrunc(temp_milli, 100)))),
+            .percent = metric.scaledPercent(celsius, self.cfg.thresholds.temperature.critical),
+            .detail = try arena.dupe(u8, format.milliCelsius(&buf, milli)),
+            .state = health.classify(celsius, self.cfg.thresholds.temperature),
+            .history = history,
         };
     }
 
-    fn networkRow(self: *Sampler, arena: std.mem.Allocator, io: Io, configured_interface: ?[]const u8, now: Io.Timestamp) !metric.Row {
-        var interface_buf: [64]u8 = undefined;
-        const interface = configured_interface orelse host.defaultInterface(io, &interface_buf) catch return self.networkUnknownRow(arena);
-        const counters = host.network(io, interface) catch return self.networkUnknownRow(arena);
-        const link_speed = host.linkSpeed(io, interface) catch null;
-
-        const rates = self.networkRates(interface, counters, now);
+    fn networkRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
+        const history = try self.histories[network_down_index].snapshot(arena);
+        const net = self.network orelse return .{
+            .label = "Network",
+            .percent = null,
+            .detail = network_unknown_detail,
+            .state = .unknown,
+            .history = history,
+        };
         var down_buf: [24]u8 = undefined;
         var up_buf: [24]u8 = undefined;
         const segments = try arena.alloc(metric.Segment, 2);
-        segments[0] = .{ .signal = .down, .percent = networkPercent(rates.rx_bytes_per_second, link_speed) };
-        segments[1] = .{ .signal = .up, .percent = networkPercent(rates.tx_bytes_per_second, link_speed) };
-        const detail = try std.fmt.allocPrint(
-            arena,
-            "{s} {s} {s} {s}",
-            .{
-                format.download_marker,
-                format.compactBytesPerSecond(&down_buf, rates.rx_bytes_per_second),
-                format.upload_marker,
-                format.compactBytesPerSecond(&up_buf, rates.tx_bytes_per_second),
-            },
-        );
-        const history = try self.histories[network_down_index].pushSnapshot(arena, rates.rx_bytes_per_second);
-        self.histories[network_up_index].push(rates.tx_bytes_per_second);
+        segments[0] = .{ .signal = .down, .percent = networkPercent(net.rx_rate, net.link_speed) };
+        segments[1] = .{ .signal = .up, .percent = networkPercent(net.tx_rate, net.link_speed) };
         return .{
             .label = "Network",
             .percent = null,
-            .detail = detail,
+            .detail = try std.fmt.allocPrint(arena, "{s} {s} {s} {s}", .{
+                format.download_marker,
+                format.compactBytesPerSecond(&down_buf, net.rx_rate),
+                format.upload_marker,
+                format.compactBytesPerSecond(&up_buf, net.tx_rate),
+            }),
             .state = .ok,
             .history = history,
             .segments = segments,
         };
     }
 
-    fn networkUnknownRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
-        self.histories[network_down_index].push(null);
-        self.histories[network_up_index].push(null);
-        return .{
-            .label = "Network",
-            .percent = null,
-            .detail = format.download_marker ++ " --/s " ++ format.upload_marker ++ " --/s",
-            .state = .unknown,
-            .history = try self.histories[network_down_index].snapshot(arena),
-        };
+    fn diskRow(self: *Sampler, arena: std.mem.Allocator, mount: []const u8, i: usize) !metric.Row {
+        const history = try self.histories[disk_start_index + i].snapshot(arena);
+        return usageRow(arena, mount, self.disks[i], health.diskThresholdFor(self.cfg.thresholds, mount), history);
+    }
+
+    fn sampleNetwork(self: *Sampler, io: Io, now: Io.Timestamp) ?Net {
+        var interface_buf: [64]u8 = undefined;
+        const interface = self.cfg.network_interface orelse host.defaultInterface(io, &interface_buf) catch return null;
+        const counters = host.network(io, interface) catch return null;
+        const link_speed = host.linkSpeed(io, interface) catch null;
+        const rates = self.networkRates(interface, counters, now);
+        return .{ .rx_rate = rates.rx_bytes_per_second, .tx_rate = rates.tx_bytes_per_second, .link_speed = link_speed };
     }
 
     fn networkRates(self: *Sampler, interface: []const u8, counters: host.Network, now: Io.Timestamp) NetworkRates {
@@ -176,7 +199,63 @@ pub const Sampler = struct {
     }
 };
 
-const Usage = struct { total: u64, free: u64 };
+fn usageRow(
+    arena: std.mem.Allocator,
+    label: []const u8,
+    usage: ?Usage,
+    thresholds: health.Thresholds,
+    history: []const ?u64,
+) !metric.Row {
+    const value = usage orelse return unknownRow(label, "-- free", history);
+    const pct = metric.usedPercent(value.total, value.free);
+    var buf: [32]u8 = undefined;
+    return .{
+        .label = label,
+        .percent = pct,
+        .detail = try std.fmt.allocPrint(arena, "{s} free", .{format.bytes(&buf, value.free)}),
+        .state = health.classify(pct, thresholds),
+        .history = history,
+    };
+}
+
+fn unknownRow(label: []const u8, detail: []const u8, history: []const ?u64) metric.Row {
+    return .{ .label = label, .percent = null, .detail = detail, .state = .unknown, .history = history };
+}
+
+fn sampleCpu(io: Io) ?Cpu {
+    const load = host.loadAverage(io) catch return null;
+    const ncpu = std.Thread.getCpuCount() catch return null;
+    return .{ .load = load, .ncpu = ncpu };
+}
+
+fn cpuPercent(cpu: Cpu) u64 {
+    return @min(100, @as(u64, @intFromFloat(cpu.load / @as(f64, @floatFromInt(cpu.ncpu)) * 100.0)));
+}
+
+fn usagePercent(usage: ?Usage) ?u64 {
+    const value = usage orelse return null;
+    return metric.usedPercent(value.total, value.free);
+}
+
+fn temperatureSample(milli: i64) u64 {
+    return @intCast(@max(@as(i64, 0), @divTrunc(milli, 100)));
+}
+
+fn memoryUsage(io: Io) !Usage {
+    const mem = try host.memory(io);
+    return .{ .total = mem.total, .free = mem.available };
+}
+
+fn diskUsage(path: []const u8) !Usage {
+    const value = try host.disk(path);
+    return .{ .total = value.total, .free = value.free };
+}
+
+fn networkPercent(rate: u64, link_speed: ?u64) u64 {
+    if (rate == 0) return 0;
+    const capacity = link_speed orelse return 0;
+    return @max(1, metric.scaledPercent(rate, capacity) orelse 0);
+}
 
 const NetworkRates = struct {
     rx_bytes_per_second: u64 = 0,
@@ -204,25 +283,10 @@ const TimedNetwork = struct {
     }
 };
 
-fn unknownRow(arena: std.mem.Allocator, history: *History, label: []const u8, detail: []const u8) !metric.Row {
-    return .{
-        .label = label,
-        .percent = null,
-        .detail = detail,
-        .state = .unknown,
-        .history = try history.pushSnapshot(arena, null),
-    };
-}
-
 const History = struct {
     values: [history_capacity]?u64 = undefined,
     start: usize = 0,
     len: usize = 0,
-
-    fn pushSnapshot(history: *History, arena: std.mem.Allocator, value: ?u64) ![]const ?u64 {
-        history.push(value);
-        return history.snapshot(arena);
-    }
 
     fn push(history: *History, value: ?u64) void {
         if (history.len < history.values.len) {
@@ -250,22 +314,6 @@ const History = struct {
     }
 };
 
-fn memoryUsage(io: Io) !Usage {
-    const mem = try host.memory(io);
-    return .{ .total = mem.total, .free = mem.available };
-}
-
-fn diskUsage(path: []const u8) !Usage {
-    const value = try host.disk(path);
-    return .{ .total = value.total, .free = value.free };
-}
-
-fn networkPercent(rate: u64, link_speed: ?u64) u64 {
-    if (rate == 0) return 0;
-    const capacity = link_speed orelse return 0;
-    return @max(1, metric.scaledPercent(rate, capacity) orelse 0);
-}
-
 test "history keeps newest values in order" {
     var history: History = .{};
     var i: u64 = 0;
@@ -292,7 +340,9 @@ test "history max ignores unknown samples" {
 test "network rates reset on first sample and interface change" {
     var sampler = Sampler{
         .allocator = std.testing.allocator,
+        .cfg = undefined,
         .histories = &.{},
+        .disks = &.{},
     };
     const first = Io.Timestamp.fromNanoseconds(1_000_000_000);
     const second = Io.Timestamp.fromNanoseconds(2_000_000_000);

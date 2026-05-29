@@ -75,6 +75,7 @@ pub fn escape(w: *Io.Writer, s: []const u8) !void {
         '>' => try w.writeAll("&gt;"),
         '"' => try w.writeAll("&quot;"),
         '\'' => try w.writeAll("&#39;"),
+        0...0x1f, 0x7f => try w.writeByte(' '),
         else => try w.writeByte(c),
     };
 }
@@ -134,4 +135,11 @@ test "escape replaces html-sensitive bytes" {
     defer aw.deinit();
     try escape(&aw.writer, "<a href=\"x\">&'");
     try std.testing.expectEqualStrings("&lt;a href=&quot;x&quot;&gt;&amp;&#39;", aw.written());
+}
+
+test "escape collapses control bytes to keep SSE single-line" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try escape(&aw.writer, "line1\nline2\r\ttab\x00end");
+    try std.testing.expectEqualStrings("line1 line2  tab end", aw.written());
 }

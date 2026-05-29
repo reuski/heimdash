@@ -19,7 +19,7 @@ pub const ServiceSummary = struct {
 pub const MetricRow = metric.Row;
 pub const Metrics = metric.Snapshot;
 
-const meter_cell_count = 32;
+const meter_cell_count = 64;
 
 pub const Services = struct {
     items: []const ServiceCard,
@@ -243,14 +243,14 @@ test "metric row rendering supports split meter segments" {
     try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "meter-row is-down"));
     try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "meter-row is-up"));
     try std.testing.expectEqual(@as(usize, meter_cell_count * 2), countOccurrences(html, "class=\"led"));
-    try std.testing.expectEqual(@as(usize, 6), countOccurrences(html, "class=\"led is-lit\""));
+    try std.testing.expectEqual(@as(usize, 11), countOccurrences(html, "class=\"led is-lit\""));
     try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"free\">\u{25BE} 1.0M/s \u{25B4} 512B/s</span></li>") != null);
 }
 
 test "meter cell counts round up visible values and cap at full scale" {
     try std.testing.expectEqual(@as(usize, 0), litCellCount(0));
     try std.testing.expectEqual(@as(usize, 1), litCellCount(1));
-    try std.testing.expectEqual(@as(usize, 16), litCellCount(50));
+    try std.testing.expectEqual(@as(usize, 32), litCellCount(50));
     try std.testing.expectEqual(@as(usize, meter_cell_count), litCellCount(100));
     try std.testing.expectEqual(@as(usize, meter_cell_count), litCellCount(120));
 }

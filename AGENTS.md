@@ -32,8 +32,10 @@
   - `ul#disks`
   - `ul#services`
 - Keep reachability state separate from summary state.
+- One background sampler loop owns history and rate deltas; handlers only read snapshots.
 - One arena per request.
 - Request arenas use `defer arena.deinit()`.
+- Concurrent service tasks allocate in per-service scratch arenas, never the shared request arena.
 
 ## Layout
 
@@ -43,10 +45,11 @@
 | `flake.nix`       | package, shell, checks                        |
 | `module.nix`      | NixOS module, generated config                |
 | `build.zig`       | executable and test targets                   |
-| `src/main.zig`    | HTTP, SSE, sockets, credentials, glue         |
+| `src/main.zig`    | HTTP, SSE, sockets, routing, glue             |
+| `src/service.zig` | reachability probes, summary fetch, fan-out   |
 | `src/host.zig`    | Linux host readers: `/proc`, `/sys`, `statfs` |
 | `src/metric.zig`  | metric rows, sections, pure math              |
-| `src/sampler.zig` | in-memory history, rate deltas                |
+| `src/sampler.zig` | background sample loop, in-memory history     |
 | `src/summary.zig` | service summary adapters and parsers          |
 | `src/render.zig`  | HTML emitters                                 |
 | `assets/`         | embedded HTML, CSS, JS                        |

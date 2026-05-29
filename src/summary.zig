@@ -33,7 +33,8 @@ pub const Prowlarr = struct {
 
 pub const Jellyfin = struct {
     version: []const u8,
-    active_sessions: u64,
+    movie_count: u64,
+    series_count: u64,
 };
 
 pub const AdGuard = struct {
@@ -52,6 +53,8 @@ pub const HomeAssistant = struct {
     entity_name: []const u8,
     entity_state: []const u8,
     entity_unit: ?[]const u8 = null,
+    temperature: ?f64 = null,
+    temperature_unit: ?[]const u8 = null,
 };
 
 pub const UserPassword = struct {
@@ -71,17 +74,21 @@ pub const Value = union(enum) {
         switch (value) {
             .arr => |item| try w.print("queue {d}", .{item.queue_count}),
             .prowlarr => |item| {
-                try w.print("indexers {d}", .{item.indexer_count});
-                if (item.health_count > 0) try w.print(" // alerts {d}", .{item.health_count});
+                try w.print("{d} idx", .{item.indexer_count});
+                if (item.health_count > 0) try w.print(" {d}!", .{item.health_count});
             },
-            .jellyfin => |item| try w.print("streams {d}", .{item.active_sessions}),
+            .jellyfin => |item| try w.print("{d} mov {d} tv", .{ item.movie_count, item.series_count }),
             .adguard => |item| if (item.protection_enabled) {
-                try w.print("blocked {d} / {d}", .{ item.blocked_count, item.query_count });
+                try w.print("blocked {d}%", .{blockedPercent(item.blocked_count, item.query_count)});
             } else {
                 try w.writeAll("protection off");
             },
             .qbittorrent => |item| try format.transferSpeeds(w, item.download_speed, item.upload_speed),
-            .home_assistant => |item| {
+            .home_assistant => |item| if (item.temperature) |temperature| {
+                try w.print("{d:.0}", .{temperature});
+                if (item.temperature_unit) |unit| try w.writeAll(unit);
+                try w.print(" {s}", .{item.entity_state});
+            } else {
                 try w.print("{s} {s}", .{ item.entity_name, item.entity_state });
                 if (item.entity_unit) |unit| try w.print(" {s}", .{unit});
             },
@@ -108,8 +115,9 @@ const JellyfinStatusJson = struct {
     Version: []const u8,
 };
 
-const JellyfinSessionJson = struct {
-    IsActive: bool = true,
+const JellyfinCountsJson = struct {
+    MovieCount: u64 = 0,
+    SeriesCount: u64 = 0,
 };
 
 const AdGuardStatusJson = struct {
@@ -133,6 +141,8 @@ const HomeAssistantStatusJson = struct {
 const HomeAssistantAttributesJson = struct {
     friendly_name: ?[]const u8 = null,
     unit_of_measurement: ?[]const u8 = null,
+    temperature: ?f64 = null,
+    temperature_unit: ?[]const u8 = null,
 };
 
 const HomeAssistantEntityJson = struct {
@@ -178,8 +188,13 @@ pub fn prowlarrIndexerPath() []const u8 {
     return "/api/v1/indexer";
 }
 
-pub fn jellyfinSessionsPath() []const u8 {
-    return "/Sessions";
+pub fn jellyfinItemCountsPath() []const u8 {
+    return "/Items/Counts";
+}
+
+fn blockedPercent(blocked: u64, queries: u64) u64 {
+    if (queries == 0) return 0;
+    return (blocked * 100 + queries / 2) / queries;
 }
 
 pub fn adguardStatsPath() []const u8 {
@@ -291,19 +306,19 @@ pub fn parseProwlarr(
     };
 }
 
-pub fn parseJellyfin(allocator: std.mem.Allocator, status_json: []const u8, sessions_json: []const u8) !Jellyfin {
+pub fn parseJellyfin(allocator: std.mem.Allocator, status_json: []const u8, counts_json: []const u8) !Jellyfin {
     const status = try std.json.parseFromSliceLeaky(JellyfinStatusJson, allocator, status_json, .{
         .ignore_unknown_fields = true,
     });
-    const sessions = try std.json.parseFromSliceLeaky([]const JellyfinSessionJson, allocator, sessions_json, .{
+    const counts = try std.json.parseFromSliceLeaky(JellyfinCountsJson, allocator, counts_json, .{
         .ignore_unknown_fields = true,
     });
     if (status.Version.len == 0) return error.MissingVersion;
-    var active_sessions: u64 = 0;
-    for (sessions) |session| {
-        if (session.IsActive) active_sessions += 1;
-    }
-    return .{ .version = try allocator.dupe(u8, status.Version), .active_sessions = active_sessions };
+    return .{
+        .version = try allocator.dupe(u8, status.Version),
+        .movie_count = counts.MovieCount,
+        .series_count = counts.SeriesCount,
+    };
 }
 
 pub fn parseAdGuard(allocator: std.mem.Allocator, status_json: []const u8, stats_json: []const u8) !AdGuard {
@@ -351,10 +366,16 @@ pub fn parseHomeAssistant(allocator: std.mem.Allocator, status_json: []const u8,
         if (value.len == 0) null else try allocator.dupe(u8, value)
     else
         null;
+    const temperature_unit = if (entity.attributes.temperature_unit) |value|
+        if (value.len == 0) null else try allocator.dupe(u8, value)
+    else
+        null;
     return .{
         .entity_name = try allocator.dupe(u8, name),
         .entity_state = try allocator.dupe(u8, entity.state),
         .entity_unit = unit,
+        .temperature = entity.attributes.temperature,
+        .temperature_unit = temperature_unit,
     };
 }
 
@@ -413,7 +434,7 @@ test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/api/v1/health", prowlarrHealthPath());
     try std.testing.expectEqualStrings("/api/v1/indexer", prowlarrIndexerPath());
     try std.testing.expectEqualStrings("/System/Info", systemStatusPath(.jellyfin));
-    try std.testing.expectEqualStrings("/Sessions", jellyfinSessionsPath());
+    try std.testing.expectEqualStrings("/Items/Counts", jellyfinItemCountsPath());
     try std.testing.expectEqualStrings("/control/status", systemStatusPath(.adguard));
     try std.testing.expectEqualStrings("/control/stats", adguardStatsPath());
     try std.testing.expectEqualStrings("/api/v2/app/version", systemStatusPath(.qbittorrent));
@@ -531,17 +552,18 @@ test "parseProwlarr rejects missing fields and malformed json" {
     } else |_| {}
 }
 
-test "parseJellyfin reads version and active sessions" {
+test "parseJellyfin reads version and library counts" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
 
     const item = try parseJellyfin(
         arena_state.allocator(),
         "{ \"Version\": \"10.10.7\", \"ServerName\": \"media\" }",
-        "[ { \"UserName\": \"one\", \"IsActive\": true }, { \"UserName\": \"two\", \"IsActive\": false }, { \"UserName\": \"three\" } ]",
+        "{ \"MovieCount\": 320, \"SeriesCount\": 45, \"EpisodeCount\": 1280 }",
     );
     try std.testing.expectEqualStrings("10.10.7", item.version);
-    try std.testing.expectEqual(@as(u64, 2), item.active_sessions);
+    try std.testing.expectEqual(@as(u64, 320), item.movie_count);
+    try std.testing.expectEqual(@as(u64, 45), item.series_count);
 }
 
 test "parseJellyfin rejects missing fields and malformed json" {
@@ -551,7 +573,7 @@ test "parseJellyfin rejects missing fields and malformed json" {
     try std.testing.expectError(error.MissingField, parseJellyfin(
         arena_state.allocator(),
         "{ \"ServerName\": \"media\" }",
-        "[]",
+        "{ \"MovieCount\": 320, \"SeriesCount\": 45 }",
     ));
     if (parseJellyfin(arena_state.allocator(), "{ \"Version\": \"10\" }", "{")) |_| {
         return error.ExpectedMalformedJsonFailure;
@@ -626,6 +648,21 @@ test "parseHomeAssistant reads api status and selected entity" {
     try std.testing.expectEqualStrings("Kitchen", item.entity_name);
     try std.testing.expectEqualStrings("21.4", item.entity_state);
     try std.testing.expectEqualStrings("C", item.entity_unit.?);
+    try std.testing.expect(item.temperature == null);
+}
+
+test "parseHomeAssistant reads weather temperature and condition" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const item = try parseHomeAssistant(
+        arena_state.allocator(),
+        "{ \"message\": \"API running.\" }",
+        "{ \"entity_id\": \"weather.forecast_home\", \"state\": \"cloudy\", \"attributes\": { \"friendly_name\": \"Forecast Home\", \"temperature\": 11.6, \"temperature_unit\": \"\u{00B0}C\" } }",
+    );
+    try std.testing.expectEqualStrings("cloudy", item.entity_state);
+    try std.testing.expectEqual(@as(f64, 11.6), item.temperature.?);
+    try std.testing.expectEqualStrings("\u{00B0}C", item.temperature_unit.?);
 }
 
 test "parseHomeAssistant rejects missing fields and malformed json" {
@@ -650,19 +687,19 @@ test "Value writes compact summary lines" {
 
     aw.clearRetainingCapacity();
     try (Value{ .prowlarr = .{ .version = "1.33.3.5065", .health_count = 2, .indexer_count = 7 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("indexers 7 // alerts 2", aw.written());
+    try std.testing.expectEqualStrings("7 idx 2!", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .prowlarr = .{ .version = "1.33.3.5065", .health_count = 0, .indexer_count = 7 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("indexers 7", aw.written());
+    try std.testing.expectEqualStrings("7 idx", aw.written());
 
     aw.clearRetainingCapacity();
-    try (Value{ .jellyfin = .{ .version = "10.10.7", .active_sessions = 2 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("streams 2", aw.written());
+    try (Value{ .jellyfin = .{ .version = "10.10.7", .movie_count = 320, .series_count = 45 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("320 mov 45 tv", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .adguard = .{ .protection_enabled = true, .query_count = 1200, .blocked_count = 83 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("blocked 83 / 1200", aw.written());
+    try std.testing.expectEqualStrings("blocked 7%", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .adguard = .{ .protection_enabled = false, .query_count = 1200, .blocked_count = 83 } }).write(&aw.writer);
@@ -675,4 +712,8 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .home_assistant = .{ .entity_name = "Kitchen", .entity_state = "21.4", .entity_unit = "C" } }).write(&aw.writer);
     try std.testing.expectEqualStrings("Kitchen 21.4 C", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .home_assistant = .{ .entity_name = "Forecast Home", .entity_state = "cloudy", .temperature = 11.6, .temperature_unit = "\u{00B0}C" } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("12\u{00B0}C cloudy", aw.written());
 }

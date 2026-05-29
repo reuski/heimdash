@@ -45,8 +45,8 @@
   --text-lg: 1.25rem;
 
   --dot: 0.5rem;
-  --meter-cells: 32;
-  --meter-gap: 0.125rem;
+  --meter-cells: 64;
+  --meter-gap: 0.0625rem;
   --title-gap: 6.5rem;
   --bracket: 1.125rem;
   --tile-min: 12rem;
@@ -115,7 +115,7 @@ main {
   border-top: 0;
   box-shadow:
     0 0 0 1px var(--bg),
-    0 0 24px var(--glow-soft);
+    inset 0 0 32px var(--glow-soft);
 }
 
 .terminal::before {
@@ -430,17 +430,17 @@ ul {
 
 #metrics .led.is-lit {
   background: var(--metric-state-color);
-  box-shadow: 0 0 6px var(--metric-state-glow);
+  box-shadow: 0 0 4px var(--metric-state-glow);
 }
 
 #metrics .meter-row.is-down .led.is-lit {
   background: var(--status-ok);
-  box-shadow: 0 0 6px var(--glow-ok);
+  box-shadow: 0 0 4px var(--glow-ok);
 }
 
 #metrics .meter-row.is-up .led.is-lit {
   background: var(--status-warn);
-  box-shadow: 0 0 6px var(--glow-warn);
+  box-shadow: 0 0 4px var(--glow-warn);
 }
 
 #metrics .free {
