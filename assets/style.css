@@ -47,6 +47,10 @@
   --dot: 0.5rem;
   --meter-cells: 64;
   --meter-gap: 0.0625rem;
+  --led-min: 0.125rem;
+  --spark-h: 0.875rem;
+  --spark-stroke: 1px;
+  --spark-glow: 3px;
   --title-gap: 6.5rem;
   --bracket: 1.125rem;
   --tile-min: 12rem;
@@ -363,7 +367,7 @@ ul {
   --metric-state-glow: var(--glow-unknown);
 
   display: grid;
-  grid-template-columns: minmax(10ch, 18ch) minmax(12rem, 1fr) minmax(
+  grid-template-columns: minmax(10ch, 18ch) minmax(min-content, 1fr) minmax(
       18ch,
       22ch
     );
@@ -404,6 +408,12 @@ ul {
   white-space: nowrap;
 }
 
+#metrics .gauge {
+  display: grid;
+  gap: var(--space-2xs);
+  min-width: 0;
+}
+
 #metrics .bar {
   display: grid;
   min-width: 0;
@@ -417,7 +427,10 @@ ul {
 
 #metrics .meter-row {
   display: grid;
-  grid-template-columns: repeat(var(--meter-cells), minmax(0, 1fr));
+  grid-template-columns: repeat(
+    var(--meter-cells),
+    minmax(var(--led-min), 1fr)
+  );
   gap: var(--meter-gap);
   min-width: 0;
 }
@@ -441,6 +454,33 @@ ul {
 #metrics .meter-row.is-up .led.is-lit {
   background: var(--status-warn);
   box-shadow: 0 0 4px var(--glow-warn);
+}
+
+#metrics .spark {
+  min-width: 0;
+  height: var(--spark-h);
+}
+
+#metrics .spark-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#metrics .spark-band {
+  fill: var(--metric-state-color);
+  opacity: 0.14;
+}
+
+#metrics .spark-line {
+  fill: none;
+  stroke: var(--metric-state-color);
+  stroke-width: var(--spark-stroke);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.72;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 var(--spark-glow) var(--metric-state-glow));
 }
 
 #metrics .free {
@@ -604,7 +644,7 @@ ul {
   }
 
   #metrics li {
-    grid-template-columns: minmax(0, 1fr) minmax(7rem, 1.5fr);
+    grid-template-columns: minmax(0, 1fr) minmax(min-content, 1.5fr);
     gap: var(--space-sm);
   }
 

@@ -127,9 +127,10 @@ fn metricRow(w: *Io.Writer, row: MetricRow) !void {
     try w.writeAll(health.cssClass(row.state));
     try w.writeAll("\"><span class=\"label\">");
     try format.escape(w, row.label);
-    try w.writeAll("</span>");
+    try w.writeAll("</span><span class=\"gauge\">");
     try metricBar(w, row);
-    try w.writeAll("<span class=\"free\">");
+    try sparkline(w, row);
+    try w.writeAll("</span><span class=\"free\">");
     try format.escape(w, row.detail);
     try w.writeAll("</span></li>");
 }
@@ -148,6 +149,101 @@ fn metricBar(w: *Io.Writer, row: MetricRow) !void {
         try meterRow(w, signalClass(segment.signal), segment.percent);
     }
     try w.writeAll("</span>");
+}
+
+const spark_resolution = 120;
+
+const SparkBucket = struct { lo: u64, hi: u64, mean: u64 };
+
+fn sparkline(w: *Io.Writer, row: MetricRow) !void {
+    const fixed_domain = row.percent != null;
+    const count = @min(row.history.len, spark_resolution);
+    var buckets: [spark_resolution]?SparkBucket = undefined;
+    sparkBuckets(row.history, buckets[0..count]);
+    const span = if (count > 1) count - 1 else 1;
+    try w.print("<span class=\"spark\"><svg class=\"spark-svg\" viewBox=\"0 0 {d} 100\" preserveAspectRatio=\"none\" aria-hidden=\"true\">", .{span});
+    if (count > 1) {
+        const ceiling: u64 = if (fixed_domain) 100 else @max(1, sparkCeiling(buckets[0..count]));
+        try sparkTrace(w, buckets[0..count], ceiling);
+    }
+    try w.writeAll("</svg></span>");
+}
+
+fn sparkBuckets(history: []const ?u64, buckets: []?SparkBucket) void {
+    for (buckets, 0..) |*bucket, k| {
+        const lo = k * history.len / buckets.len;
+        const hi = (k + 1) * history.len / buckets.len;
+        var min_value: u64 = std.math.maxInt(u64);
+        var max_value: u64 = 0;
+        var sum: u128 = 0;
+        var count: u64 = 0;
+        for (history[lo..hi]) |sample| {
+            if (sample) |value| {
+                min_value = @min(min_value, value);
+                max_value = @max(max_value, value);
+                sum += value;
+                count += 1;
+            }
+        }
+        bucket.* = if (count == 0) null else .{ .lo = min_value, .hi = max_value, .mean = @intCast(sum / count) };
+    }
+}
+
+fn sparkCeiling(buckets: []const ?SparkBucket) u64 {
+    var result: u64 = 0;
+    for (buckets) |maybe| {
+        if (maybe) |bucket| result = @max(result, bucket.hi);
+    }
+    return result;
+}
+
+fn sparkTrace(w: *Io.Writer, buckets: []const ?SparkBucket, ceiling: u64) !void {
+    var i: usize = 0;
+    while (i < buckets.len) {
+        if (buckets[i] == null) {
+            i += 1;
+            continue;
+        }
+        const start = i;
+        while (i < buckets.len and buckets[i] != null) : (i += 1) {}
+        const run = buckets[start..i];
+        if (run.len < 2) continue;
+        try sparkBand(w, run, start, ceiling);
+        try sparkMeanLine(w, run, start, ceiling);
+    }
+}
+
+fn sparkBand(w: *Io.Writer, run: []const ?SparkBucket, start: usize, ceiling: u64) !void {
+    var has_range = false;
+    for (run) |maybe| {
+        const bucket = maybe.?;
+        if (bucket.hi != bucket.lo) {
+            has_range = true;
+            break;
+        }
+    }
+    if (!has_range) return;
+
+    try w.writeAll("<polygon class=\"spark-band\" points=\"");
+    for (run, start..) |maybe, x| {
+        if (x != start) try w.writeByte(' ');
+        try w.print("{d},{d}", .{ x, 100 - metric.relativePercent(maybe.?.hi, ceiling) });
+    }
+    var j = run.len;
+    while (j > 0) {
+        j -= 1;
+        try w.print(" {d},{d}", .{ start + j, 100 - metric.relativePercent(run[j].?.lo, ceiling) });
+    }
+    try w.writeAll("\" />");
+}
+
+fn sparkMeanLine(w: *Io.Writer, run: []const ?SparkBucket, start: usize, ceiling: u64) !void {
+    try w.writeAll("<polyline class=\"spark-line\" points=\"");
+    for (run, start..) |maybe, x| {
+        if (x != start) try w.writeByte(' ');
+        try w.print("{d},{d}", .{ x, 100 - metric.relativePercent(maybe.?.mean, ceiling) });
+    }
+    try w.writeAll("\" />");
 }
 
 fn meterRow(w: *Io.Writer, class: []const u8, percent: u64) !void {
@@ -245,6 +341,81 @@ test "metric row rendering supports split meter segments" {
     try std.testing.expectEqual(@as(usize, meter_cell_count * 2), countOccurrences(html, "class=\"led"));
     try std.testing.expectEqual(@as(usize, 11), countOccurrences(html, "class=\"led is-lit\""));
     try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"free\">\u{25BE} 1.0M/s \u{25B4} 512B/s</span></li>") != null);
+}
+
+test "sparkline emits an empty svg wrapper when history is too short to plot" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    try sparkline(&aw.writer, .{ .label = "CPU", .percent = 50, .detail = "", .state = .ok });
+
+    try std.testing.expectEqualStrings(
+        "<span class=\"spark\"><svg class=\"spark-svg\" viewBox=\"0 0 1 100\" preserveAspectRatio=\"none\" aria-hidden=\"true\"></svg></span>",
+        aw.written(),
+    );
+}
+
+test "sparkline inverts y over a fixed percent domain" {
+    const history = [_]?u64{ 0, 50, 100 };
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    try sparkline(&aw.writer, .{ .label = "CPU", .percent = 50, .detail = "", .state = .ok, .history = &history });
+
+    const html = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, html, "viewBox=\"0 0 2 100\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<polyline class=\"spark-line\" points=\"0,100 1,50 2,0\" />") != null);
+}
+
+test "sparkline scales rows without a percent against their observed maximum" {
+    const history = [_]?u64{ 200, 400, 800 };
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    try sparkline(&aw.writer, .{ .label = "Network", .percent = null, .detail = "", .state = .ok, .history = &history });
+
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "points=\"0,75 1,50 2,0\"") != null);
+}
+
+test "sparkline splits the trace into segments across gaps and drops lone samples" {
+    const history = [_]?u64{ 10, 20, null, 30, null, 40, 50 };
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    try sparkline(&aw.writer, .{ .label = "CPU", .percent = 50, .detail = "", .state = .ok, .history = &history });
+
+    const html = aw.written();
+    try std.testing.expectEqual(@as(usize, 2), countOccurrences(html, "<polyline"));
+    try std.testing.expect(std.mem.indexOf(u8, html, "points=\"0,90 1,80\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "points=\"5,60 6,50\"") != null);
+}
+
+test "sparkBuckets reduces samples to min, max, and mean and marks empty buckets as gaps" {
+    const history = [_]?u64{ 10, 20, null, 40, 60, 80 };
+    var buckets: [3]?SparkBucket = undefined;
+
+    sparkBuckets(&history, &buckets);
+
+    try std.testing.expectEqual(@as(?SparkBucket, .{ .lo = 10, .hi = 20, .mean = 15 }), buckets[0]);
+    try std.testing.expectEqual(@as(?SparkBucket, .{ .lo = 40, .hi = 40, .mean = 40 }), buckets[1]);
+    try std.testing.expectEqual(@as(?SparkBucket, .{ .lo = 60, .hi = 80, .mean = 70 }), buckets[2]);
+}
+
+test "sparkline draws a min/max envelope band under the mean line for aggregated buckets" {
+    var history: [spark_resolution * 2]?u64 = undefined;
+    for (&history, 0..) |*sample, i| sample.* = if (i % 2 == 0) @as(u64, 20) else 80;
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    try sparkline(&aw.writer, .{ .label = "CPU", .percent = 50, .detail = "", .state = .ok, .history = &history });
+
+    const html = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, html, "viewBox=\"0 0 119 100\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "<polygon class=\"spark-band\""));
+    const band = html[std.mem.indexOf(u8, html, "<polygon").?..];
+    try std.testing.expect(std.mem.indexOf(u8, band, "0,20") != null);
+    try std.testing.expect(std.mem.indexOf(u8, band, "0,80") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<polyline class=\"spark-line\" points=\"0,50 1,50") != null);
 }
 
 test "meter cell counts round up visible values and cap at full scale" {

@@ -6,7 +6,7 @@ const health = @import("health.zig");
 const host = @import("host.zig");
 const metric = @import("metric.zig");
 
-pub const history_capacity = 120;
+pub const history_capacity = 1920;
 pub const sample_interval_seconds = 15;
 
 pub const Config = struct {
@@ -79,7 +79,7 @@ pub const Sampler = struct {
 
         self.histories[cpu_index].push(if (self.cpu) |cpu| cpuPercent(cpu) else null);
         self.histories[memory_index].push(usagePercent(self.memory));
-        self.histories[temperature_index].push(if (self.temperature) |milli| temperatureSample(milli) else null);
+        self.histories[temperature_index].push(if (self.temperature) |milli| metric.scaledPercent(temperatureCelsius(milli), self.cfg.thresholds.temperature.critical) else null);
         if (self.network) |net| {
             self.histories[network_down_index].push(net.rx_rate);
             self.histories[network_up_index].push(net.tx_rate);
@@ -133,7 +133,7 @@ pub const Sampler = struct {
     fn temperatureRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
         const history = try self.histories[temperature_index].snapshot(arena);
         const milli = self.temperature orelse return unknownRow("Temp", "-- C", history);
-        const celsius: u64 = @intCast(@max(@as(i64, 0), @divTrunc(milli, 1000)));
+        const celsius: u64 = temperatureCelsius(milli);
         var buf: [32]u8 = undefined;
         return .{
             .label = "Temp",
@@ -237,8 +237,8 @@ fn usagePercent(usage: ?Usage) ?u64 {
     return metric.usedPercent(value.total, value.free);
 }
 
-fn temperatureSample(milli: i64) u64 {
-    return @intCast(@max(@as(i64, 0), @divTrunc(milli, 100)));
+fn temperatureCelsius(milli: i64) u64 {
+    return @intCast(@max(@as(i64, 0), @divTrunc(milli, 1000)));
 }
 
 fn memoryUsage(io: Io) !Usage {
