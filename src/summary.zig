@@ -707,7 +707,7 @@ test "Value writes compact summary lines" {
 
     aw.clearRetainingCapacity();
     try (Value{ .qbittorrent = .{ .version = "v5.0.3", .download_speed = 1048576, .upload_speed = 2048 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("\u{25BE} 1.0M/s \u{25B4} 2.0K/s", aw.written());
+    try std.testing.expectEqualStrings("\u{25BC} 1.0M/s \u{25B2} 2.0K/s", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .home_assistant = .{ .entity_name = "Kitchen", .entity_state = "21.4", .entity_unit = "C" } }).write(&aw.writer);

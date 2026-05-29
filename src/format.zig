@@ -1,8 +1,8 @@
 const std = @import("std");
 const Io = std.Io;
 
-pub const download_marker = "\u{25BE}";
-pub const upload_marker = "\u{25B4}";
+pub const download_marker = "\u{25BC}";
+pub const upload_marker = "\u{25B2}";
 
 pub fn bytes(buf: []u8, n: u64) []const u8 {
     const units = [_][]const u8{ "B", "KiB", "MiB", "GiB", "TiB", "PiB" };
@@ -107,7 +107,7 @@ test "transferSpeeds writes compact down and up markers" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
     try transferSpeeds(&aw.writer, 1048576, 2048);
-    try std.testing.expectEqualStrings("\u{25BE} 1.0M/s \u{25B4} 2.0K/s", aw.written());
+    try std.testing.expectEqualStrings("\u{25BC} 1.0M/s \u{25B2} 2.0K/s", aw.written());
 }
 
 test "milliCelsius formats tenths" {

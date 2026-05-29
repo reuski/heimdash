@@ -128,8 +128,8 @@ fn metricRow(w: *Io.Writer, row: MetricRow) !void {
     try w.writeAll("\"><span class=\"label\">");
     try format.escape(w, row.label);
     try w.writeAll("</span><span class=\"gauge\">");
-    try metricBar(w, row);
     try sparkline(w, row);
+    try metricBar(w, row);
     try w.writeAll("</span><span class=\"free\">");
     try format.escape(w, row.detail);
     try w.writeAll("</span></li>");
@@ -329,7 +329,7 @@ test "metric row rendering supports split meter segments" {
     try metricRow(&aw.writer, .{
         .label = "Network",
         .percent = null,
-        .detail = "\u{25BE} 1.0M/s \u{25B4} 512B/s",
+        .detail = "\u{25BC} 1.0M/s \u{25B2} 512B/s",
         .state = .ok,
         .segments = &segments,
     });
@@ -340,7 +340,7 @@ test "metric row rendering supports split meter segments" {
     try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "meter-row is-up"));
     try std.testing.expectEqual(@as(usize, meter_cell_count * 2), countOccurrences(html, "class=\"led"));
     try std.testing.expectEqual(@as(usize, 11), countOccurrences(html, "class=\"led is-lit\""));
-    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"free\">\u{25BE} 1.0M/s \u{25B4} 512B/s</span></li>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"free\">\u{25BC} 1.0M/s \u{25B2} 512B/s</span></li>") != null);
 }
 
 test "sparkline emits an empty svg wrapper when history is too short to plot" {

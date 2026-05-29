@@ -47,10 +47,12 @@
   --dot: 0.5rem;
   --meter-cells: 64;
   --meter-gap: 0.0625rem;
-  --led-min: 0.125rem;
-  --spark-h: 0.875rem;
+  --led-min: 0.25rem;
+  --spark-h: 1.125rem;
   --spark-stroke: 1px;
   --spark-glow: 3px;
+  --spark-bg: rgba(255, 157, 66, 0.05);
+  --spark-grid: rgba(255, 157, 66, 0.06);
   --title-gap: 6.5rem;
   --bracket: 1.125rem;
   --tile-min: 12rem;
@@ -318,6 +320,10 @@ main {
   flex-direction: column;
 }
 
+#metrics {
+  container: metrics / inline-size;
+}
+
 .service-panel {
   border-left: 1px solid var(--border);
   padding-left: var(--space-lg);
@@ -367,10 +373,7 @@ ul {
   --metric-state-glow: var(--glow-unknown);
 
   display: grid;
-  grid-template-columns: minmax(10ch, 18ch) minmax(min-content, 1fr) minmax(
-      18ch,
-      22ch
-    );
+  grid-template-columns: minmax(10ch, 18ch) minmax(0, 1fr) minmax(18ch, 22ch);
   align-items: center;
   gap: var(--space-md);
   min-height: 2.375rem;
@@ -410,7 +413,7 @@ ul {
 
 #metrics .gauge {
   display: grid;
-  gap: var(--space-2xs);
+  gap: var(--space-xs);
   min-width: 0;
 }
 
@@ -423,6 +426,7 @@ ul {
   background: var(--panel-raised);
   border: 1px solid var(--border-strong);
   box-shadow: inset 0 0 0 1px var(--meter-inset);
+  overflow: hidden;
 }
 
 #metrics .meter-row {
@@ -459,6 +463,13 @@ ul {
 #metrics .spark {
   min-width: 0;
   height: var(--spark-h);
+  background-color: var(--spark-bg);
+  background-image:
+    linear-gradient(0deg, var(--spark-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--spark-grid) 1px, transparent 1px);
+  background-size:
+    100% 33.333%,
+    2rem 100%;
 }
 
 #metrics .spark-svg {
@@ -468,19 +479,19 @@ ul {
 }
 
 #metrics .spark-band {
-  fill: var(--metric-state-color);
-  opacity: 0.14;
+  fill: var(--accent);
+  opacity: 0.12;
 }
 
 #metrics .spark-line {
   fill: none;
-  stroke: var(--metric-state-color);
+  stroke: var(--accent);
   stroke-width: var(--spark-stroke);
   stroke-linecap: round;
   stroke-linejoin: round;
-  opacity: 0.72;
+  opacity: 0.8;
   vector-effect: non-scaling-stroke;
-  filter: drop-shadow(0 0 var(--spark-glow) var(--metric-state-glow));
+  filter: drop-shadow(0 0 var(--spark-glow) var(--glow));
 }
 
 #metrics .free {
@@ -642,9 +653,11 @@ ul {
   #hostline h1 {
     font-size: var(--text-lg);
   }
+}
 
+@container metrics (max-width: 32rem) {
   #metrics li {
-    grid-template-columns: minmax(0, 1fr) minmax(min-content, 1.5fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
     gap: var(--space-sm);
   }
 
