@@ -24,10 +24,6 @@ pub fn cards(arena: std.mem.Allocator, services: []const Service) ![]const rende
     return result;
 }
 
-/// Probes reachability and fetches summaries for every service concurrently.
-/// Each task allocates into its own scratch arena because the request arena is
-/// single-threaded; the small summary strings are copied into `arena` after the
-/// group joins, before the scratch arenas are released.
 pub fn collect(
     arena: std.mem.Allocator,
     io: Io,
@@ -262,9 +258,6 @@ fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []const
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ root, path });
 }
 
-/// Runs `func` but abandons the result if `seconds` elapse first. The race itself
-/// needs concurrency; if the runtime cannot spawn the racing task we fall back to
-/// a direct, untimed call rather than failing the whole request.
 fn within(io: Io, seconds: i64, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) ?@typeInfo(@TypeOf(func)).@"fn".return_type.? {
     const Result = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
     const Race = union(enum) { value: Result, expired: void };

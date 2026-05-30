@@ -16,6 +16,7 @@ pub const Row = struct {
     state: health.State,
     history: []const ?u64 = &.{},
     segments: []const Segment = &.{},
+    spark_relative: bool = false,
 };
 
 pub const Section = struct {

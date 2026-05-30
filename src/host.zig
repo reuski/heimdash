@@ -6,7 +6,11 @@ const format = @import("format.zig");
 
 pub const Memory = struct { total: u64, available: u64 };
 pub const Disk = struct { total: u64, free: u64 };
+pub const DiskIo = struct { read_bytes: u64, write_bytes: u64 };
+pub const CpuTimes = struct { total: u64, idle: u64 };
 pub const Network = struct { rx_bytes: u64, tx_bytes: u64 };
+
+const diskstats_sector_size = 512;
 
 pub fn hostname(io: Io, buf: []u8) ![]const u8 {
     return std.mem.trim(u8, try readSmall(io, "/etc/hostname", buf), " \t\r\n");
@@ -27,6 +31,13 @@ pub fn loadAverage(io: Io) !f64 {
     const text = try readSmall(io, "/proc/loadavg", &buf);
     const space = std.mem.indexOfScalar(u8, text, ' ') orelse return error.BadLoadAvg;
     return std.fmt.parseFloat(f64, text[0..space]);
+}
+
+pub fn cpuTimes(io: Io) !CpuTimes {
+    try requireLinux();
+    var buf: [1024]u8 = undefined;
+    const text = try readSmall(io, "/proc/stat", &buf);
+    return parseCpuTimes(text) orelse error.CpuUnavailable;
 }
 
 pub fn memory(io: Io) !Memory {
@@ -99,6 +110,26 @@ pub fn disk(path: []const u8) !Disk {
     return .{ .total = st.f_blocks *% bs, .free = st.f_bavail *% bs };
 }
 
+pub fn diskIo(io: Io, path: []const u8) !DiskIo {
+    try requireLinux();
+    const linux = std.os.linux;
+    var path_buf: [std.posix.PATH_MAX]u8 = undefined;
+    if (path.len >= path_buf.len) return error.NameTooLong;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+
+    var stx: linux.Statx = undefined;
+    const mask: linux.STATX = @bitCast(@as(u32, 0));
+    switch (linux.errno(linux.statx(linux.AT.FDCWD, @ptrCast(&path_buf), 0, mask, &stx))) {
+        .SUCCESS => {},
+        else => return error.DiskIoUnavailable,
+    }
+
+    var buf: [64 * 1024]u8 = undefined;
+    const text = try readSmall(io, "/proc/diskstats", &buf);
+    return parseDiskstats(text, stx.dev_major, stx.dev_minor) orelse error.DiskIoUnavailable;
+}
+
 fn requireLinux() !void {
     if (builtin.os.tag != .linux) return error.UnsupportedHost;
 }
@@ -107,6 +138,23 @@ pub fn parseTemperature(text: []const u8) ?i64 {
     const value = std.mem.trim(u8, text, " \t\r\n");
     if (value.len == 0) return null;
     return std.fmt.parseInt(i64, value, 10) catch null;
+}
+
+pub fn parseCpuTimes(text: []const u8) ?CpuTimes {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    const first = lines.next() orelse return null;
+    var fields = std.mem.tokenizeAny(u8, first, " \t");
+    if (!std.mem.eql(u8, fields.next() orelse return null, "cpu")) return null;
+
+    var total: u64 = 0;
+    var idle: u64 = 0;
+    var index: usize = 0;
+    while (fields.next()) |field| : (index += 1) {
+        const value = std.fmt.parseInt(u64, field, 10) catch return null;
+        total += value;
+        if (index == 3 or index == 4) idle += value;
+    }
+    return .{ .total = total, .idle = idle };
 }
 
 pub fn parseDefaultInterface(text: []const u8) ?[]const u8 {
@@ -135,6 +183,30 @@ pub fn parseNetwork(text: []const u8, interface: []const u8) ?Network {
         while (skipped < 7) : (skipped += 1) _ = fields.next() orelse return null;
         const tx = std.fmt.parseInt(u64, fields.next() orelse return null, 10) catch return null;
         return .{ .rx_bytes = rx, .tx_bytes = tx };
+    }
+    return null;
+}
+
+pub fn parseDiskstats(text: []const u8, major: u32, minor: u32) ?DiskIo {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const maj = std.fmt.parseInt(u32, fields.next() orelse continue, 10) catch continue;
+        const min = std.fmt.parseInt(u32, fields.next() orelse continue, 10) catch continue;
+        if (maj != major or min != minor) continue;
+
+        _ = fields.next() orelse return null;
+        _ = fields.next() orelse return null;
+        _ = fields.next() orelse return null;
+        const sectors_read = std.fmt.parseInt(u64, fields.next() orelse return null, 10) catch return null;
+        _ = fields.next() orelse return null;
+        _ = fields.next() orelse return null;
+        _ = fields.next() orelse return null;
+        const sectors_written = std.fmt.parseInt(u64, fields.next() orelse return null, 10) catch return null;
+        return .{
+            .read_bytes = sectors_read *% diskstats_sector_size,
+            .write_bytes = sectors_written *% diskstats_sector_size,
+        };
     }
     return null;
 }
@@ -177,6 +249,18 @@ test "parseTemperature trims thermal zone values" {
     try std.testing.expectEqual(@as(?i64, null), parseTemperature("\n"));
 }
 
+test "parseCpuTimes totals jiffies and counts idle plus iowait" {
+    const text =
+        \\cpu  100 0 200 1000 50 0 0 0 0 0
+        \\cpu0 50 0 100 500 25 0 0 0 0 0
+        \\intr 12345
+    ;
+    const times = parseCpuTimes(text).?;
+    try std.testing.expectEqual(@as(u64, 1350), times.total);
+    try std.testing.expectEqual(@as(u64, 1050), times.idle);
+    try std.testing.expectEqual(@as(?CpuTimes, null), parseCpuTimes("intr 0\n"));
+}
+
 test "parseDefaultInterface selects the default route" {
     const text =
         \\Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
@@ -197,6 +281,22 @@ test "parseNetwork extracts rx and tx bytes" {
     try std.testing.expectEqual(@as(u64, 123456), counters.rx_bytes);
     try std.testing.expectEqual(@as(u64, 654321), counters.tx_bytes);
     try std.testing.expectEqual(@as(?Network, null), parseNetwork(text, "missing0"));
+}
+
+test "parseDiskstats reads sector counters for the matching device" {
+    const text =
+        \\   8       0 sda 12345 100 678900 5000 23456 200 789000 6000 0 7000 11000
+        \\ 259       0 nvme0n1 11 0 880 2 33 0 1320 4 0 6 8
+    ;
+    const sda = parseDiskstats(text, 8, 0).?;
+    try std.testing.expectEqual(@as(u64, 678900 * 512), sda.read_bytes);
+    try std.testing.expectEqual(@as(u64, 789000 * 512), sda.write_bytes);
+
+    const nvme = parseDiskstats(text, 259, 0).?;
+    try std.testing.expectEqual(@as(u64, 880 * 512), nvme.read_bytes);
+    try std.testing.expectEqual(@as(u64, 1320 * 512), nvme.write_bytes);
+
+    try std.testing.expectEqual(@as(?DiskIo, null), parseDiskstats(text, 8, 1));
 }
 
 test "parseLinkSpeed converts sysfs megabits to bytes per second" {

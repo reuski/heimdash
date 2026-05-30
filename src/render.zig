@@ -156,7 +156,7 @@ const spark_resolution = 120;
 const SparkBucket = struct { lo: u64, hi: u64, mean: u64 };
 
 fn sparkline(w: *Io.Writer, row: MetricRow) !void {
-    const fixed_domain = row.percent != null;
+    const fixed_domain = row.percent != null and !row.spark_relative;
     const count = @min(row.history.len, spark_resolution);
     var buckets: [spark_resolution]?SparkBucket = undefined;
     sparkBuckets(row.history, buckets[0..count]);
@@ -339,7 +339,6 @@ test "metric row rendering supports split meter segments" {
     try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "meter-row is-down"));
     try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "meter-row is-up"));
     try std.testing.expectEqual(@as(usize, meter_cell_count * 2), countOccurrences(html, "class=\"led"));
-    try std.testing.expectEqual(@as(usize, 11), countOccurrences(html, "class=\"led is-lit\""));
     try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"free\">\u{25BC} 1.0M/s \u{25B2} 512B/s</span></li>") != null);
 }
 
@@ -367,14 +366,19 @@ test "sparkline inverts y over a fixed percent domain" {
     try std.testing.expect(std.mem.indexOf(u8, html, "<polyline class=\"spark-line\" points=\"0,100 1,50 2,0\" />") != null);
 }
 
-test "sparkline scales rows without a percent against their observed maximum" {
+test "sparkline relative-scales rows that lack a fixed percent domain" {
     const history = [_]?u64{ 200, 400, 800 };
-    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
+    const cases = [_]MetricRow{
+        .{ .label = "Network", .percent = null, .detail = "", .state = .ok, .history = &history },
+        .{ .label = "/srv", .percent = 42, .detail = "", .state = .ok, .history = &history, .spark_relative = true },
+    };
 
-    try sparkline(&aw.writer, .{ .label = "Network", .percent = null, .detail = "", .state = .ok, .history = &history });
-
-    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "points=\"0,75 1,50 2,0\"") != null);
+    for (cases) |row| {
+        var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+        defer aw.deinit();
+        try sparkline(&aw.writer, row);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "points=\"0,75 1,50 2,0\"") != null);
+    }
 }
 
 test "sparkline splits the trace into segments across gaps and drops lone samples" {

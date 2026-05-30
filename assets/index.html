@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>… // HEIMDASH</title>
+    <title>◻ // HEIMDASH</title>
     <link
       rel="icon"
       type="image/svg+xml"
@@ -63,8 +63,8 @@
         hourCycle: "h23",
       });
 
-      const setTitle = (mark) => {
-        document.title = `${mark} // HEIMDASH`;
+      const setTitle = (status) => {
+        document.title = `${status} // HEIMDASH`;
       };
 
       const syncClock = () => {
@@ -75,37 +75,38 @@
         setTimeout(syncClock, 1000 - (Date.now() % 1000));
       };
 
-      let alertTitleTimer;
-      let alertTitleMark = ".";
+      let faultTimer;
+      let faultCount = 0;
+      let faultLit = false;
 
-      const stopAlertTitle = () => {
-        clearInterval(alertTitleTimer);
-        alertTitleTimer = undefined;
+      const renderFault = () => {
+        setTitle(`${faultLit ? "◼" : "◻"} ${faultCount}`);
+        faultLit = !faultLit;
       };
 
-      const pulseAlertTitle = () => {
-        alertTitleMark = alertTitleMark === "!" ? "." : "!";
-        setTitle(alertTitleMark);
-      };
-
-      const startAlertTitle = () => {
-        if (alertTitleTimer) return;
-        alertTitleMark = ".";
-        pulseAlertTitle();
-        alertTitleTimer = setInterval(pulseAlertTitle, 1000);
+      const stopFault = () => {
+        clearInterval(faultTimer);
+        faultTimer = undefined;
+        faultCount = 0;
       };
 
       const syncTitle = () => {
-        if (services.querySelector(".is-down")) {
-          startAlertTitle();
+        const down = services.querySelectorAll(".is-down").length;
+        if (down) {
+          if (down !== faultCount) {
+            faultCount = down;
+            faultLit = true;
+            renderFault();
+          }
+          if (!faultTimer) faultTimer = setInterval(renderFault, 900);
           return;
         }
 
-        stopAlertTitle();
+        stopFault();
         setTitle(
           !services.children.length || services.querySelector(".is-checking")
-            ? "…"
-            : "✓",
+            ? "◻"
+            : "◼",
         );
       };
 

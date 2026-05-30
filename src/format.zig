@@ -16,11 +16,6 @@ pub fn bytes(buf: []u8, n: u64) []const u8 {
     return result catch "?";
 }
 
-pub fn bytesPerSecond(buf: []u8, n: u64) []const u8 {
-    var bytes_buf: [32]u8 = undefined;
-    return std.fmt.bufPrint(buf, "{s}/s", .{bytes(&bytes_buf, n)}) catch "?/s";
-}
-
 pub fn compactBytesPerSecond(buf: []u8, n: u64) []const u8 {
     const units = [_][]const u8{ "B", "K", "M", "G", "T", "P" };
     var value: f64 = @floatFromInt(n);
@@ -87,12 +82,6 @@ test "bytes scales units" {
     try std.testing.expectEqualStrings("1.0 KiB", bytes(&buf, 1024));
     try std.testing.expectEqualStrings("1.5 KiB", bytes(&buf, 1536));
     try std.testing.expectEqualStrings("1.0 GiB", bytes(&buf, 1024 * 1024 * 1024));
-}
-
-test "bytesPerSecond appends rate suffix" {
-    var buf: [40]u8 = undefined;
-    try std.testing.expectEqualStrings("0 B/s", bytesPerSecond(&buf, 0));
-    try std.testing.expectEqualStrings("1.0 KiB/s", bytesPerSecond(&buf, 1024));
 }
 
 test "compactBytesPerSecond uses short rate units" {
