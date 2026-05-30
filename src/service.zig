@@ -196,6 +196,30 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             defer gpa.free(entity_json);
             return .{ .home_assistant = try summary.parseHomeAssistant(parse_arena, status_json, entity_json) };
         },
+        .audiobookshelf => {
+            const cred = credential_value orelse return error.SummaryUnavailable;
+            const authorization = try summary.bearerAuthorizationValue(gpa, cred);
+            defer {
+                @memset(authorization, 0);
+                gpa.free(authorization);
+            }
+            const libraries_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &.{}, authorization);
+            defer gpa.free(libraries_json);
+            const library_ids = try summary.parseAudiobookshelfBookLibraries(parse_arena, libraries_json);
+
+            var book_count: u64 = 0;
+            var duration_seconds: u64 = 0;
+            for (library_ids) |library_id| {
+                const stats_path = try summary.audiobookshelfStatsPath(gpa, library_id);
+                defer gpa.free(stats_path);
+                const stats_json = try fetchSummaryBody(&client, gpa, base_url, stats_path, &.{}, authorization);
+                defer gpa.free(stats_json);
+                const stats = try summary.parseAudiobookshelfStats(parse_arena, stats_json);
+                book_count += stats.items;
+                duration_seconds += stats.duration_seconds;
+            }
+            return .{ .audiobookshelf = .{ .book_count = book_count, .duration_seconds = duration_seconds } };
+        },
     }
 }
 

@@ -11,6 +11,7 @@ pub const Adapter = enum {
     adguard,
     qbittorrent,
     home_assistant,
+    audiobookshelf,
 };
 
 pub fn requiresCredential(adapter: Adapter) bool {
@@ -57,6 +58,16 @@ pub const HomeAssistant = struct {
     temperature_unit: ?[]const u8 = null,
 };
 
+pub const Audiobookshelf = struct {
+    book_count: u64,
+    duration_seconds: u64,
+};
+
+pub const AudiobookshelfStats = struct {
+    items: u64,
+    duration_seconds: u64,
+};
+
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -69,6 +80,7 @@ pub const Value = union(enum) {
     adguard: AdGuard,
     qbittorrent: Qbittorrent,
     home_assistant: HomeAssistant,
+    audiobookshelf: Audiobookshelf,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -91,6 +103,10 @@ pub const Value = union(enum) {
             } else {
                 try w.print("{s} {s}", .{ item.entity_name, item.entity_state });
                 if (item.entity_unit) |unit| try w.print(" {s}", .{unit});
+            },
+            .audiobookshelf => |item| {
+                try w.print("{d} books", .{item.book_count});
+                if (item.duration_seconds > 0) try w.print(" {d}h", .{item.duration_seconds / 3600});
             },
         }
     }
@@ -151,6 +167,20 @@ const HomeAssistantEntityJson = struct {
     attributes: HomeAssistantAttributesJson = .{},
 };
 
+const AudiobookshelfLibraryJson = struct {
+    id: []const u8 = "",
+    mediaType: []const u8 = "",
+};
+
+const AudiobookshelfLibrariesJson = struct {
+    libraries: []const AudiobookshelfLibraryJson = &.{},
+};
+
+const AudiobookshelfStatsJson = struct {
+    totalItems: u64 = 0,
+    totalDuration: f64 = 0,
+};
+
 pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "sonarr")) return .sonarr;
     if (std.ascii.eqlIgnoreCase(kind, "radarr")) return .radarr;
@@ -159,6 +189,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "adguard")) return .adguard;
     if (std.ascii.eqlIgnoreCase(kind, "qbittorrent")) return .qbittorrent;
     if (std.ascii.eqlIgnoreCase(kind, "home_assistant")) return .home_assistant;
+    if (std.ascii.eqlIgnoreCase(kind, "audiobookshelf")) return .audiobookshelf;
     return null;
 }
 
@@ -170,6 +201,7 @@ pub fn systemStatusPath(adapter: Adapter) []const u8 {
         .adguard => "/control/status",
         .qbittorrent => "/api/v2/app/version",
         .home_assistant => "/api/",
+        .audiobookshelf => "/api/libraries",
     };
 }
 
@@ -210,6 +242,15 @@ pub fn homeAssistantStatePath(allocator: std.mem.Allocator, entity_id: []const u
     errdefer aw.deinit();
     try aw.writer.writeAll("/api/states/");
     try writeUriPathSegment(&aw.writer, entity_id);
+    return try aw.toOwnedSlice();
+}
+
+pub fn audiobookshelfStatsPath(allocator: std.mem.Allocator, library_id: []const u8) ![]u8 {
+    var aw: Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    try aw.writer.writeAll("/api/libraries/");
+    try writeUriPathSegment(&aw.writer, library_id);
+    try aw.writer.writeAll("/stats");
     return try aw.toOwnedSlice();
 }
 
@@ -379,6 +420,33 @@ pub fn parseHomeAssistant(allocator: std.mem.Allocator, status_json: []const u8,
     };
 }
 
+pub fn parseAudiobookshelfBookLibraries(allocator: std.mem.Allocator, libraries_json: []const u8) ![]const []const u8 {
+    const parsed = try std.json.parseFromSliceLeaky(AudiobookshelfLibrariesJson, allocator, libraries_json, .{
+        .ignore_unknown_fields = true,
+    });
+    var count: usize = 0;
+    for (parsed.libraries) |library| {
+        if (std.mem.eql(u8, library.mediaType, "book")) count += 1;
+    }
+    const ids = try allocator.alloc([]const u8, count);
+    var i: usize = 0;
+    for (parsed.libraries) |library| {
+        if (!std.mem.eql(u8, library.mediaType, "book")) continue;
+        if (library.id.len == 0) return error.MissingLibraryId;
+        ids[i] = try allocator.dupe(u8, library.id);
+        i += 1;
+    }
+    return ids[0..i];
+}
+
+pub fn parseAudiobookshelfStats(allocator: std.mem.Allocator, stats_json: []const u8) !AudiobookshelfStats {
+    const stats = try std.json.parseFromSliceLeaky(AudiobookshelfStatsJson, allocator, stats_json, .{
+        .ignore_unknown_fields = true,
+    });
+    const duration_seconds: u64 = if (stats.totalDuration > 0) @intFromFloat(stats.totalDuration) else 0;
+    return .{ .items = stats.totalItems, .duration_seconds = duration_seconds };
+}
+
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
     for (value) |c| {
         if (c == ' ') {
@@ -417,6 +485,7 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.adguard, adapterForKind("ADGUARD").?);
     try std.testing.expectEqual(Adapter.qbittorrent, adapterForKind("qBittorrent").?);
     try std.testing.expectEqual(Adapter.home_assistant, adapterForKind("home_assistant").?);
+    try std.testing.expectEqual(Adapter.audiobookshelf, adapterForKind("Audiobookshelf").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
@@ -444,6 +513,11 @@ test "paths follow supported service APIs" {
     const state_path = try homeAssistantStatePath(std.testing.allocator, "sensor.kitchen temperature");
     defer std.testing.allocator.free(state_path);
     try std.testing.expectEqualStrings("/api/states/sensor.kitchen%20temperature", state_path);
+
+    try std.testing.expectEqualStrings("/api/libraries", systemStatusPath(.audiobookshelf));
+    const stats_path = try audiobookshelfStatsPath(std.testing.allocator, "lib_c1u6t4p45c35rf0nzd");
+    defer std.testing.allocator.free(stats_path);
+    try std.testing.expectEqualStrings("/api/libraries/lib_c1u6t4p45c35rf0nzd/stats", stats_path);
 }
 
 test "credential helpers trim files and reject header-breaking content" {
@@ -679,6 +753,42 @@ test "parseHomeAssistant rejects missing fields and malformed json" {
     } else |_| {}
 }
 
+test "parseAudiobookshelfBookLibraries selects book libraries only" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const ids = try parseAudiobookshelfBookLibraries(
+        arena_state.allocator(),
+        "{ \"libraries\": [ { \"id\": \"lib_a\", \"mediaType\": \"book\" }, { \"id\": \"lib_b\", \"mediaType\": \"podcast\" }, { \"id\": \"lib_c\", \"mediaType\": \"book\" } ] }",
+    );
+    try std.testing.expectEqual(@as(usize, 2), ids.len);
+    try std.testing.expectEqualStrings("lib_a", ids[0]);
+    try std.testing.expectEqualStrings("lib_c", ids[1]);
+}
+
+test "parseAudiobookshelfBookLibraries tolerates empty library list and malformed json" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const ids = try parseAudiobookshelfBookLibraries(arena_state.allocator(), "{ \"libraries\": [] }");
+    try std.testing.expectEqual(@as(usize, 0), ids.len);
+    if (parseAudiobookshelfBookLibraries(arena_state.allocator(), "{")) |_| {
+        return error.ExpectedMalformedJsonFailure;
+    } else |_| {}
+}
+
+test "parseAudiobookshelfStats reads item count and duration seconds" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const stats = try parseAudiobookshelfStats(
+        arena_state.allocator(),
+        "{ \"totalItems\": 42, \"totalAuthors\": 30, \"totalDuration\": 12000.946, \"totalSize\": 268990279 }",
+    );
+    try std.testing.expectEqual(@as(u64, 42), stats.items);
+    try std.testing.expectEqual(@as(u64, 12000), stats.duration_seconds);
+}
+
 test "Value writes compact summary lines" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -716,4 +826,12 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .home_assistant = .{ .entity_name = "Forecast Home", .entity_state = "cloudy", .temperature = 11.6, .temperature_unit = "\u{00B0}C" } }).write(&aw.writer);
     try std.testing.expectEqualStrings("12\u{00B0}C cloudy", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .audiobookshelf = .{ .book_count = 42, .duration_seconds = 12000 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("42 books 3h", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .audiobookshelf = .{ .book_count = 0, .duration_seconds = 0 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("0 books", aw.written());
 }

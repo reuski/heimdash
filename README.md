@@ -85,6 +85,7 @@ nix fmt
 | `prowlarr`       | API key                      | indexers, health alerts |
 | `qbittorrent`    | `username:password`          | transfer rates          |
 | `home_assistant` | token + `entity`             | entity state            |
+| `audiobookshelf` | API token                    | book count, duration    |
 
 ## Credentials
 
