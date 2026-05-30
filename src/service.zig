@@ -13,6 +13,7 @@ pub const Service = struct {
     name: []const u8,
     url: []const u8,
     check: ?[]const u8 = null,
+    api: ?[]const u8 = null,
     kind: ?[]const u8 = null,
     credential: ?[]const u8 = null,
     entity: ?[]const u8 = null,
@@ -98,7 +99,7 @@ fn serviceSummary(arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, cred
         break :value summary.credentialHeaderValue(credential_bytes) orelse return .{};
     } else null;
     if (summary.requiresCredential(adapter) and credential_value == null) return .{};
-    return within(io, summary_timeout_seconds, summaryText, .{ arena, gpa, io, adapter, svc.url, credential_value, svc.entity }) orelse .{};
+    return within(io, summary_timeout_seconds, summaryText, .{ arena, gpa, io, adapter, svc.api orelse svc.url, credential_value, svc.entity }) orelse .{};
 }
 
 fn readCredentialBytes(arena: std.mem.Allocator, io: Io, credentials_directory: ?[]const u8, name: []const u8) ![]const u8 {
@@ -220,6 +221,18 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             }
             return .{ .audiobookshelf = .{ .book_count = book_count, .duration_seconds = duration_seconds } };
         },
+        .vaultwarden => {
+            const cred = credential_value orelse return error.SummaryUnavailable;
+            const cookie = try fetchVaultwardenCookie(&client, gpa, base_url, cred);
+            defer {
+                @memset(cookie, 0);
+                gpa.free(cookie);
+            }
+            const headers = [_]http.Header{.{ .name = "Cookie", .value = cookie }};
+            const users_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &headers, null);
+            defer gpa.free(users_json);
+            return .{ .vaultwarden = try summary.parseVaultwarden(parse_arena, users_json) };
+        },
     }
 }
 
@@ -272,6 +285,38 @@ fn fetchQbittorrentCookie(client: *http.Client, gpa: std.mem.Allocator, base_url
     while (it.next()) |header| {
         if (!std.ascii.eqlIgnoreCase(header.name, "set-cookie")) continue;
         const cookie = summary.qbittorrentSessionCookie(header.value) orelse continue;
+        return try gpa.dupe(u8, cookie);
+    }
+    return error.SummaryUnavailable;
+}
+
+fn fetchVaultwardenCookie(client: *http.Client, gpa: std.mem.Allocator, base_url: []const u8, credential_value: []const u8) ![]u8 {
+    const url = try endpointUrl(gpa, base_url, summary.vaultwardenLoginPath());
+    defer gpa.free(url);
+    const body = try summary.vaultwardenLoginBody(gpa, credential_value);
+    defer {
+        @memset(body, 0);
+        gpa.free(body);
+    }
+
+    const uri = try std.Uri.parse(url);
+    const referer = std.mem.trimEnd(u8, base_url, "/");
+    const headers = [_]http.Header{.{ .name = "Referer", .value = referer }};
+    var req = try client.request(.POST, uri, .{
+        .redirect_behavior = .unhandled,
+        .keep_alive = false,
+        .headers = .{ .content_type = .{ .override = "application/x-www-form-urlencoded" } },
+        .extra_headers = &headers,
+    });
+    defer req.deinit();
+
+    try req.sendBodyComplete(body);
+    var response = try req.receiveHead(&.{});
+
+    var it = response.head.iterateHeaders();
+    while (it.next()) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "set-cookie")) continue;
+        const cookie = summary.vaultwardenSessionCookie(header.value) orelse continue;
         return try gpa.dupe(u8, cookie);
     }
     return error.SummaryUnavailable;

@@ -126,6 +126,11 @@ in
               default = null;
               description = "Optional URL to probe for reachability instead of url.";
             };
+            api = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional base URL for read-only summary requests instead of url.";
+            };
             kind = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
@@ -258,6 +263,10 @@ in
       {
         assertion = lib.all (service: service.check == null || service.check != "") cfg.services;
         message = "services.heimdash.services entries with check set must use a non-empty check URL.";
+      }
+      {
+        assertion = lib.all (service: service.api == null || service.api != "") cfg.services;
+        message = "services.heimdash.services entries with api set must use a non-empty api URL.";
       }
       {
         assertion = lib.all (service: service.kind == null || service.kind != "") cfg.services;

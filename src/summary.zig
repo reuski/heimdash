@@ -12,6 +12,7 @@ pub const Adapter = enum {
     qbittorrent,
     home_assistant,
     audiobookshelf,
+    vaultwarden,
 };
 
 pub fn requiresCredential(adapter: Adapter) bool {
@@ -68,6 +69,10 @@ pub const AudiobookshelfStats = struct {
     duration_seconds: u64,
 };
 
+pub const Vaultwarden = struct {
+    user_count: u64,
+};
+
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -81,6 +86,7 @@ pub const Value = union(enum) {
     qbittorrent: Qbittorrent,
     home_assistant: HomeAssistant,
     audiobookshelf: Audiobookshelf,
+    vaultwarden: Vaultwarden,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -108,6 +114,7 @@ pub const Value = union(enum) {
                 try w.print("{d} books", .{item.book_count});
                 if (item.duration_seconds > 0) try w.print(" {d}h", .{item.duration_seconds / 3600});
             },
+            .vaultwarden => |item| try w.print("{d} users", .{item.user_count}),
         }
     }
 };
@@ -181,6 +188,8 @@ const AudiobookshelfStatsJson = struct {
     totalDuration: f64 = 0,
 };
 
+const VaultwardenUserJson = struct {};
+
 pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "sonarr")) return .sonarr;
     if (std.ascii.eqlIgnoreCase(kind, "radarr")) return .radarr;
@@ -190,6 +199,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "qbittorrent")) return .qbittorrent;
     if (std.ascii.eqlIgnoreCase(kind, "home_assistant")) return .home_assistant;
     if (std.ascii.eqlIgnoreCase(kind, "audiobookshelf")) return .audiobookshelf;
+    if (std.ascii.eqlIgnoreCase(kind, "vaultwarden")) return .vaultwarden;
     return null;
 }
 
@@ -202,6 +212,7 @@ pub fn systemStatusPath(adapter: Adapter) []const u8 {
         .qbittorrent => "/api/v2/app/version",
         .home_assistant => "/api/",
         .audiobookshelf => "/api/libraries",
+        .vaultwarden => "/admin/users",
     };
 }
 
@@ -302,6 +313,30 @@ pub fn qbittorrentSessionCookie(set_cookie: []const u8) ?[]const u8 {
     const eq = std.mem.indexOfScalar(u8, value, '=') orelse return null;
     const name = value[0..eq];
     if (!std.mem.eql(u8, name, "SID") and !std.mem.startsWith(u8, name, "QBT_SID")) return null;
+    const end = std.mem.indexOfScalar(u8, value, ';') orelse value.len;
+    const cookie = value[0..end];
+    if (cookie.len <= eq + 1) return null;
+    if (std.mem.indexOfAny(u8, cookie, " \t\r\n;") != null) return null;
+    return cookie;
+}
+
+pub fn vaultwardenLoginPath() []const u8 {
+    return "/admin";
+}
+
+pub fn vaultwardenLoginBody(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    const token = credentialHeaderValue(bytes) orelse return error.InvalidCredential;
+    var aw: Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    try aw.writer.writeAll("token=");
+    try writeFormValue(&aw.writer, token);
+    return try aw.toOwnedSlice();
+}
+
+pub fn vaultwardenSessionCookie(set_cookie: []const u8) ?[]const u8 {
+    const value = std.mem.trim(u8, set_cookie, " \t\r\n");
+    const eq = std.mem.indexOfScalar(u8, value, '=') orelse return null;
+    if (!std.mem.eql(u8, value[0..eq], "VW_ADMIN")) return null;
     const end = std.mem.indexOfScalar(u8, value, ';') orelse value.len;
     const cookie = value[0..end];
     if (cookie.len <= eq + 1) return null;
@@ -447,6 +482,13 @@ pub fn parseAudiobookshelfStats(allocator: std.mem.Allocator, stats_json: []cons
     return .{ .items = stats.totalItems, .duration_seconds = duration_seconds };
 }
 
+pub fn parseVaultwarden(allocator: std.mem.Allocator, users_json: []const u8) !Vaultwarden {
+    const users = try std.json.parseFromSliceLeaky([]const VaultwardenUserJson, allocator, users_json, .{
+        .ignore_unknown_fields = true,
+    });
+    return .{ .user_count = users.len };
+}
+
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
     for (value) |c| {
         if (c == ' ') {
@@ -486,6 +528,7 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.qbittorrent, adapterForKind("qBittorrent").?);
     try std.testing.expectEqual(Adapter.home_assistant, adapterForKind("home_assistant").?);
     try std.testing.expectEqual(Adapter.audiobookshelf, adapterForKind("Audiobookshelf").?);
+    try std.testing.expectEqual(Adapter.vaultwarden, adapterForKind("Vaultwarden").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
@@ -494,6 +537,7 @@ test "requiresCredential is false only for unauthenticated status endpoints" {
     try std.testing.expect(requiresCredential(.sonarr));
     try std.testing.expect(requiresCredential(.qbittorrent));
     try std.testing.expect(requiresCredential(.home_assistant));
+    try std.testing.expect(requiresCredential(.vaultwarden));
 }
 
 test "paths follow supported service APIs" {
@@ -518,6 +562,9 @@ test "paths follow supported service APIs" {
     const stats_path = try audiobookshelfStatsPath(std.testing.allocator, "lib_c1u6t4p45c35rf0nzd");
     defer std.testing.allocator.free(stats_path);
     try std.testing.expectEqualStrings("/api/libraries/lib_c1u6t4p45c35rf0nzd/stats", stats_path);
+
+    try std.testing.expectEqualStrings("/admin/users", systemStatusPath(.vaultwarden));
+    try std.testing.expectEqualStrings("/admin", vaultwardenLoginPath());
 }
 
 test "credential helpers trim files and reject header-breaking content" {
@@ -560,6 +607,18 @@ test "qbittorrent login helpers encode form body and session cookie" {
     try std.testing.expect(qbittorrentSessionCookie("session=abc") == null);
     try std.testing.expect(qbittorrentSessionCookie("SID=") == null);
     try std.testing.expect(qbittorrentSessionCookie("QBT_SID_8080=") == null);
+}
+
+test "vaultwarden login helpers encode token form and admin cookie" {
+    const body = try vaultwardenLoginBody(std.testing.allocator, " s3cret token+\n");
+    defer {
+        @memset(body, 0);
+        std.testing.allocator.free(body);
+    }
+    try std.testing.expectEqualStrings("token=s3cret+token%2B", body);
+    try std.testing.expectEqualStrings("VW_ADMIN=abc.def.ghi", vaultwardenSessionCookie("VW_ADMIN=abc.def.ghi; Path=/; HttpOnly").?);
+    try std.testing.expect(vaultwardenSessionCookie("session=abc") == null);
+    try std.testing.expect(vaultwardenSessionCookie("VW_ADMIN=") == null);
 }
 
 test "isAvailableHttpStatus rejects auth failures" {
@@ -789,6 +848,23 @@ test "parseAudiobookshelfStats reads item count and duration seconds" {
     try std.testing.expectEqual(@as(u64, 12000), stats.duration_seconds);
 }
 
+test "parseVaultwarden counts the admin user list" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const item = try parseVaultwarden(
+        arena_state.allocator(),
+        "[ { \"Email\": \"a@example.com\" }, { \"Email\": \"b@example.com\" }, { \"Email\": \"c@example.com\" } ]",
+    );
+    try std.testing.expectEqual(@as(u64, 3), item.user_count);
+
+    const empty = try parseVaultwarden(arena_state.allocator(), "[]");
+    try std.testing.expectEqual(@as(u64, 0), empty.user_count);
+    if (parseVaultwarden(arena_state.allocator(), "{")) |_| {
+        return error.ExpectedMalformedJsonFailure;
+    } else |_| {}
+}
+
 test "Value writes compact summary lines" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -834,4 +910,8 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .audiobookshelf = .{ .book_count = 0, .duration_seconds = 0 } }).write(&aw.writer);
     try std.testing.expectEqualStrings("0 books", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .vaultwarden = .{ .user_count = 3 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("3 users", aw.written());
 }
