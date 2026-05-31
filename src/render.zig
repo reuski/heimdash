@@ -19,7 +19,7 @@ pub const ServiceSummary = struct {
 pub const MetricRow = metric.Row;
 pub const Metrics = metric.Snapshot;
 
-const meter_cell_count = 80;
+const meter_cell_count = 96;
 
 pub const Services = struct {
     items: []const ServiceCard,
@@ -128,8 +128,8 @@ fn metricRow(w: *Io.Writer, row: MetricRow) !void {
     try w.writeAll("\"><span class=\"label\">");
     try format.escape(w, row.label);
     try w.writeAll("</span><span class=\"gauge\">");
-    try sparkline(w, row);
     try metricBar(w, row);
+    try sparkline(w, row);
     try w.writeAll("</span><span class=\"free\">");
     try format.escape(w, row.detail);
     try w.writeAll("</span></li>");
@@ -425,7 +425,7 @@ test "sparkline draws a min/max envelope band under the mean line for aggregated
 test "meter cell counts round up visible values and cap at full scale" {
     try std.testing.expectEqual(@as(usize, 0), litCellCount(0));
     try std.testing.expectEqual(@as(usize, 1), litCellCount(1));
-    try std.testing.expectEqual(@as(usize, 40), litCellCount(50));
+    try std.testing.expectEqual(@as(usize, 48), litCellCount(50));
     try std.testing.expectEqual(@as(usize, meter_cell_count), litCellCount(100));
     try std.testing.expectEqual(@as(usize, meter_cell_count), litCellCount(120));
 }

@@ -45,14 +45,16 @@
   --text-lg: 1.25rem;
 
   --dot: 0.5rem;
-  --meter-cells: 80;
+  --meter-cells: 96;
   --meter-gap: 0.0625rem;
   --led-min: 0.25rem;
-  --spark-h: 1.125rem;
+  --spark-h: 1.625rem;
   --spark-stroke: 1px;
   --spark-glow: 3px;
-  --spark-bg: rgba(255, 157, 66, 0.05);
-  --spark-grid: rgba(255, 157, 66, 0.06);
+  --spark-color: #4dff8a;
+  --spark-glow-color: rgba(77, 255, 138, 0.45);
+  --spark-bg: rgba(77, 255, 138, 0.04);
+  --spark-grid: rgba(77, 255, 138, 0.07);
   --title-gap: 6.5rem;
   --bracket: 1.125rem;
   --tile-min: 12rem;
@@ -483,19 +485,19 @@ ul {
 }
 
 #metrics .spark-band {
-  fill: var(--accent);
+  fill: var(--spark-color);
   opacity: 0.12;
 }
 
 #metrics .spark-line {
   fill: none;
-  stroke: var(--accent);
+  stroke: var(--spark-color);
   stroke-width: var(--spark-stroke);
   stroke-linecap: round;
   stroke-linejoin: round;
   opacity: 0.8;
   vector-effect: non-scaling-stroke;
-  filter: drop-shadow(0 0 var(--spark-glow) var(--glow));
+  filter: drop-shadow(0 0 var(--spark-glow) var(--spark-glow-color));
 }
 
 #metrics .free {
