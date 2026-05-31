@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>◻ // HEIMDASH</title>
+    <title>□ SCN // HEIMDASH</title>
     <link
       rel="icon"
       type="image/svg+xml"
@@ -80,7 +80,7 @@
       let faultLit = false;
 
       const renderFault = () => {
-        setTitle(`${faultLit ? "◼" : "◻"} ${faultCount}`);
+        setTitle(`${faultLit ? "■" : "□"} ERR ${faultCount}`);
         faultLit = !faultLit;
       };
 
@@ -105,8 +105,8 @@
         stopFault();
         setTitle(
           !services.children.length || services.querySelector(".is-checking")
-            ? "◻"
-            : "◼",
+            ? "□ SCN"
+            : "■ RDY",
         );
       };
 
