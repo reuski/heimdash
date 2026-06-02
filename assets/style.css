@@ -45,10 +45,12 @@
   --text-lg: 1.25rem;
 
   --dot: 0.5rem;
-  --meter-cells: 96;
+  --meter-cells: 48;
   --meter-gap: 0.0625rem;
-  --led-min: 0.25rem;
-  --spark-h: 1.625rem;
+  --led-min: 0.1875rem;
+  --led-h: 0.25rem;
+  --led-radius: 1px;
+  --spark-h: 1.5rem;
   --spark-stroke: 1px;
   --spark-glow: 3px;
   --spark-color: #4dff8a;
@@ -419,7 +421,8 @@ ul {
   grid-column: 2;
   grid-row: 1 / 3;
   align-self: stretch;
-  gap: var(--space-xs);
+  align-content: center;
+  gap: var(--space-2xs);
   min-width: 0;
 }
 
@@ -443,11 +446,12 @@ ul {
   );
   gap: var(--meter-gap);
   min-width: 0;
+  height: var(--led-h);
 }
 
 #metrics .led {
   min-width: 0;
-  aspect-ratio: 1;
+  border-radius: var(--led-radius);
   background: var(--led-off);
 }
 
@@ -629,10 +633,6 @@ ul {
 }
 
 @media (max-width: 720px) {
-  :root {
-    --meter-gap: 1px;
-  }
-
   main {
     padding: var(--space-xs);
   }
