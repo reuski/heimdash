@@ -13,11 +13,12 @@ pub const Adapter = enum {
     home_assistant,
     audiobookshelf,
     vaultwarden,
+    maintainerr,
 };
 
 pub fn requiresCredential(adapter: Adapter) bool {
     return switch (adapter) {
-        .adguard => false,
+        .adguard, .maintainerr => false,
         else => true,
     };
 }
@@ -73,6 +74,12 @@ pub const Vaultwarden = struct {
     user_count: u64,
 };
 
+pub const Maintainerr = struct {
+    reclaimable_count: u64,
+    reclaimable_bytes: u64,
+    handled_count: u64,
+};
+
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -87,6 +94,7 @@ pub const Value = union(enum) {
     home_assistant: HomeAssistant,
     audiobookshelf: Audiobookshelf,
     vaultwarden: Vaultwarden,
+    maintainerr: Maintainerr,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -115,6 +123,15 @@ pub const Value = union(enum) {
                 if (item.duration_seconds > 0) try w.print(" {d}h", .{item.duration_seconds / 3600});
             },
             .vaultwarden => |item| try w.print("{d} users", .{item.user_count}),
+            .maintainerr => |item| {
+                if (item.reclaimable_bytes > 0) {
+                    var bytes_buf: [32]u8 = undefined;
+                    try w.print("{s} reclaim", .{format.bytes(&bytes_buf, item.reclaimable_bytes)});
+                } else {
+                    try w.print("{d} reclaim", .{item.reclaimable_count});
+                }
+                if (item.handled_count > 0) try w.print(" {d} done", .{item.handled_count});
+            },
         }
     }
 };
@@ -157,10 +174,6 @@ const QbittorrentTransferJson = struct {
     up_info_speed: u64,
 };
 
-const HomeAssistantStatusJson = struct {
-    message: []const u8,
-};
-
 const HomeAssistantAttributesJson = struct {
     friendly_name: ?[]const u8 = null,
     unit_of_measurement: ?[]const u8 = null,
@@ -190,6 +203,31 @@ const AudiobookshelfStatsJson = struct {
 
 const VaultwardenUserJson = struct {};
 
+const MaintainerrCleanupTotalsJson = struct {
+    itemsHandled: u64 = 0,
+    moviesHandled: u64 = 0,
+    showsHandled: u64 = 0,
+    seasonsHandled: u64 = 0,
+    episodesHandled: u64 = 0,
+};
+
+const MaintainerrCollectionSummaryJson = struct {
+    reclaimableCollectionCount: u64 = 0,
+    reclaimableMovieCount: u64 = 0,
+    reclaimableShowCount: u64 = 0,
+    reclaimableSeasonCount: u64 = 0,
+    reclaimableEpisodeCount: u64 = 0,
+    movieSizeBytes: u64 = 0,
+    showSizeBytes: u64 = 0,
+    seasonSizeBytes: u64 = 0,
+    episodeSizeBytes: u64 = 0,
+};
+
+const MaintainerrStorageMetricsJson = struct {
+    cleanupTotals: MaintainerrCleanupTotalsJson = .{},
+    collectionSummary: MaintainerrCollectionSummaryJson = .{},
+};
+
 pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "sonarr")) return .sonarr;
     if (std.ascii.eqlIgnoreCase(kind, "radarr")) return .radarr;
@@ -200,19 +238,21 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "home_assistant")) return .home_assistant;
     if (std.ascii.eqlIgnoreCase(kind, "audiobookshelf")) return .audiobookshelf;
     if (std.ascii.eqlIgnoreCase(kind, "vaultwarden")) return .vaultwarden;
+    if (std.ascii.eqlIgnoreCase(kind, "maintainerr")) return .maintainerr;
     return null;
 }
 
-pub fn systemStatusPath(adapter: Adapter) []const u8 {
+pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
     return switch (adapter) {
         .sonarr, .radarr => "/api/v3/system/status",
         .prowlarr => "/api/v1/system/status",
         .jellyfin => "/System/Info",
         .adguard => "/control/status",
         .qbittorrent => "/api/v2/app/version",
-        .home_assistant => "/api/",
+        .home_assistant => null,
         .audiobookshelf => "/api/libraries",
         .vaultwarden => "/admin/users",
+        .maintainerr => "/api/storage-metrics",
     };
 }
 
@@ -295,29 +335,6 @@ pub fn basicAuthorizationValue(allocator: std.mem.Allocator, bytes: []const u8) 
 pub fn bearerAuthorizationValue(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     const value = credentialHeaderValue(bytes) orelse return error.InvalidCredential;
     return try std.fmt.allocPrint(allocator, "Bearer {s}", .{value});
-}
-
-pub fn qbittorrentLoginBody(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    const credentials = userPassword(bytes) orelse return error.InvalidCredential;
-    var aw: Io.Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    try aw.writer.writeAll("username=");
-    try writeFormValue(&aw.writer, credentials.username);
-    try aw.writer.writeAll("&password=");
-    try writeFormValue(&aw.writer, credentials.password);
-    return try aw.toOwnedSlice();
-}
-
-pub fn qbittorrentSessionCookie(set_cookie: []const u8) ?[]const u8 {
-    const value = std.mem.trim(u8, set_cookie, " \t\r\n");
-    const eq = std.mem.indexOfScalar(u8, value, '=') orelse return null;
-    const name = value[0..eq];
-    if (!std.mem.eql(u8, name, "SID") and !std.mem.startsWith(u8, name, "QBT_SID")) return null;
-    const end = std.mem.indexOfScalar(u8, value, ';') orelse value.len;
-    const cookie = value[0..end];
-    if (cookie.len <= eq + 1) return null;
-    if (std.mem.indexOfAny(u8, cookie, " \t\r\n;") != null) return null;
-    return cookie;
 }
 
 pub fn vaultwardenLoginPath() []const u8 {
@@ -424,14 +441,10 @@ pub fn parseQbittorrent(allocator: std.mem.Allocator, version_text: []const u8, 
     };
 }
 
-pub fn parseHomeAssistant(allocator: std.mem.Allocator, status_json: []const u8, entity_json: []const u8) !HomeAssistant {
-    const status = try std.json.parseFromSliceLeaky(HomeAssistantStatusJson, allocator, status_json, .{
-        .ignore_unknown_fields = true,
-    });
+pub fn parseHomeAssistant(allocator: std.mem.Allocator, entity_json: []const u8) !HomeAssistant {
     const entity = try std.json.parseFromSliceLeaky(HomeAssistantEntityJson, allocator, entity_json, .{
         .ignore_unknown_fields = true,
     });
-    if (status.message.len == 0) return error.MissingStatus;
     if (entity.entity_id.len == 0) return error.MissingEntity;
     if (entity.state.len == 0) return error.MissingEntityState;
     const name = if (entity.attributes.friendly_name) |friendly_name|
@@ -489,6 +502,21 @@ pub fn parseVaultwarden(allocator: std.mem.Allocator, users_json: []const u8) !V
     return .{ .user_count = users.len };
 }
 
+pub fn parseMaintainerr(allocator: std.mem.Allocator, metrics_json: []const u8) !Maintainerr {
+    const metrics = try std.json.parseFromSliceLeaky(MaintainerrStorageMetricsJson, allocator, metrics_json, .{
+        .ignore_unknown_fields = true,
+    });
+    const summary = metrics.collectionSummary;
+    const totals = metrics.cleanupTotals;
+    const reclaimable_type_count =
+        summary.reclaimableMovieCount + summary.reclaimableShowCount + summary.reclaimableSeasonCount + summary.reclaimableEpisodeCount;
+    return .{
+        .reclaimable_count = if (summary.reclaimableCollectionCount > 0) summary.reclaimableCollectionCount else reclaimable_type_count,
+        .reclaimable_bytes = summary.movieSizeBytes + summary.showSizeBytes + summary.seasonSizeBytes + summary.episodeSizeBytes,
+        .handled_count = if (totals.itemsHandled > 0) totals.itemsHandled else totals.moviesHandled + totals.showsHandled + totals.seasonsHandled + totals.episodesHandled,
+    };
+}
+
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
     for (value) |c| {
         if (c == ' ') {
@@ -529,11 +557,13 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.home_assistant, adapterForKind("home_assistant").?);
     try std.testing.expectEqual(Adapter.audiobookshelf, adapterForKind("Audiobookshelf").?);
     try std.testing.expectEqual(Adapter.vaultwarden, adapterForKind("Vaultwarden").?);
+    try std.testing.expectEqual(Adapter.maintainerr, adapterForKind("Maintainerr").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
-test "requiresCredential is false only for unauthenticated status endpoints" {
+test "requiresCredential is false only for unauthenticated summary endpoints" {
     try std.testing.expect(!requiresCredential(.adguard));
+    try std.testing.expect(!requiresCredential(.maintainerr));
     try std.testing.expect(requiresCredential(.sonarr));
     try std.testing.expect(requiresCredential(.qbittorrent));
     try std.testing.expect(requiresCredential(.home_assistant));
@@ -541,30 +571,31 @@ test "requiresCredential is false only for unauthenticated status endpoints" {
 }
 
 test "paths follow supported service APIs" {
-    try std.testing.expectEqualStrings("/api/v3/system/status", systemStatusPath(.sonarr));
+    try std.testing.expectEqualStrings("/api/v3/system/status", systemStatusPath(.sonarr).?);
     try std.testing.expectEqualStrings("/api/v3/queue/status", arrQueueStatusPath(.radarr).?);
-    try std.testing.expectEqualStrings("/api/v1/system/status", systemStatusPath(.prowlarr));
+    try std.testing.expectEqualStrings("/api/v1/system/status", systemStatusPath(.prowlarr).?);
     try std.testing.expectEqualStrings("/api/v1/health", prowlarrHealthPath());
     try std.testing.expectEqualStrings("/api/v1/indexer", prowlarrIndexerPath());
-    try std.testing.expectEqualStrings("/System/Info", systemStatusPath(.jellyfin));
+    try std.testing.expectEqualStrings("/System/Info", systemStatusPath(.jellyfin).?);
     try std.testing.expectEqualStrings("/Items/Counts", jellyfinItemCountsPath());
-    try std.testing.expectEqualStrings("/control/status", systemStatusPath(.adguard));
+    try std.testing.expectEqualStrings("/control/status", systemStatusPath(.adguard).?);
     try std.testing.expectEqualStrings("/control/stats", adguardStatsPath());
-    try std.testing.expectEqualStrings("/api/v2/app/version", systemStatusPath(.qbittorrent));
+    try std.testing.expectEqualStrings("/api/v2/app/version", systemStatusPath(.qbittorrent).?);
     try std.testing.expectEqualStrings("/api/v2/transfer/info", qbittorrentTransferPath());
-    try std.testing.expectEqualStrings("/api/", systemStatusPath(.home_assistant));
+    try std.testing.expect(systemStatusPath(.home_assistant) == null);
 
     const state_path = try homeAssistantStatePath(std.testing.allocator, "sensor.kitchen temperature");
     defer std.testing.allocator.free(state_path);
     try std.testing.expectEqualStrings("/api/states/sensor.kitchen%20temperature", state_path);
 
-    try std.testing.expectEqualStrings("/api/libraries", systemStatusPath(.audiobookshelf));
+    try std.testing.expectEqualStrings("/api/libraries", systemStatusPath(.audiobookshelf).?);
     const stats_path = try audiobookshelfStatsPath(std.testing.allocator, "lib_c1u6t4p45c35rf0nzd");
     defer std.testing.allocator.free(stats_path);
     try std.testing.expectEqualStrings("/api/libraries/lib_c1u6t4p45c35rf0nzd/stats", stats_path);
 
-    try std.testing.expectEqualStrings("/admin/users", systemStatusPath(.vaultwarden));
+    try std.testing.expectEqualStrings("/admin/users", systemStatusPath(.vaultwarden).?);
     try std.testing.expectEqualStrings("/admin", vaultwardenLoginPath());
+    try std.testing.expectEqualStrings("/api/storage-metrics", systemStatusPath(.maintainerr).?);
 }
 
 test "credential helpers trim files and reject header-breaking content" {
@@ -593,20 +624,6 @@ test "auth value helpers derive request-only credentials" {
         std.testing.allocator.free(bearer);
     }
     try std.testing.expectEqualStrings("Bearer token", bearer);
-}
-
-test "qbittorrent login helpers encode form body and session cookie" {
-    const body = try qbittorrentLoginBody(std.testing.allocator, "admin:pass word+");
-    defer {
-        @memset(body, 0);
-        std.testing.allocator.free(body);
-    }
-    try std.testing.expectEqualStrings("username=admin&password=pass+word%2B", body);
-    try std.testing.expectEqualStrings("SID=abc123", qbittorrentSessionCookie("SID=abc123; path=/").?);
-    try std.testing.expectEqualStrings("QBT_SID_8080=abc123", qbittorrentSessionCookie("QBT_SID_8080=abc123; HttpOnly; path=/").?);
-    try std.testing.expect(qbittorrentSessionCookie("session=abc") == null);
-    try std.testing.expect(qbittorrentSessionCookie("SID=") == null);
-    try std.testing.expect(qbittorrentSessionCookie("QBT_SID_8080=") == null);
 }
 
 test "vaultwarden login helpers encode token form and admin cookie" {
@@ -769,13 +786,12 @@ test "parseQbittorrent rejects missing fields and malformed json" {
     } else |_| {}
 }
 
-test "parseHomeAssistant reads api status and selected entity" {
+test "parseHomeAssistant reads selected entity" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
 
     const item = try parseHomeAssistant(
         arena_state.allocator(),
-        "{ \"message\": \"API running.\" }",
         "{ \"entity_id\": \"sensor.kitchen\", \"state\": \"21.4\", \"attributes\": { \"friendly_name\": \"Kitchen\", \"unit_of_measurement\": \"C\" } }",
     );
     try std.testing.expectEqualStrings("Kitchen", item.entity_name);
@@ -790,7 +806,6 @@ test "parseHomeAssistant reads weather temperature and condition" {
 
     const item = try parseHomeAssistant(
         arena_state.allocator(),
-        "{ \"message\": \"API running.\" }",
         "{ \"entity_id\": \"weather.forecast_home\", \"state\": \"cloudy\", \"attributes\": { \"friendly_name\": \"Forecast Home\", \"temperature\": 11.6, \"temperature_unit\": \"\u{00B0}C\" } }",
     );
     try std.testing.expectEqualStrings("cloudy", item.entity_state);
@@ -804,10 +819,9 @@ test "parseHomeAssistant rejects missing fields and malformed json" {
 
     try std.testing.expectError(error.MissingField, parseHomeAssistant(
         arena_state.allocator(),
-        "{ \"message\": \"API running.\" }",
         "{ \"entity_id\": \"sensor.kitchen\" }",
     ));
-    if (parseHomeAssistant(arena_state.allocator(), "{ \"message\": \"API running.\" }", "{")) |_| {
+    if (parseHomeAssistant(arena_state.allocator(), "{")) |_| {
         return error.ExpectedMalformedJsonFailure;
     } else |_| {}
 }
@@ -865,6 +879,27 @@ test "parseVaultwarden counts the admin user list" {
     } else |_| {}
 }
 
+test "parseMaintainerr reads storage metrics" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const item = try parseMaintainerr(
+        arena_state.allocator(),
+        "{ \"cleanupTotals\": { \"itemsHandled\": 12 }, \"collectionSummary\": { \"reclaimableMovieCount\": 2, \"reclaimableShowCount\": 1, \"movieSizeBytes\": 1073741824, \"showSizeBytes\": 2147483648 } }",
+    );
+    try std.testing.expectEqual(@as(u64, 3), item.reclaimable_count);
+    try std.testing.expectEqual(@as(u64, 3221225472), item.reclaimable_bytes);
+    try std.testing.expectEqual(@as(u64, 12), item.handled_count);
+
+    const empty = try parseMaintainerr(arena_state.allocator(), "{}");
+    try std.testing.expectEqual(@as(u64, 0), empty.reclaimable_count);
+    try std.testing.expectEqual(@as(u64, 0), empty.reclaimable_bytes);
+    try std.testing.expectEqual(@as(u64, 0), empty.handled_count);
+    if (parseMaintainerr(arena_state.allocator(), "{")) |_| {
+        return error.ExpectedMalformedJsonFailure;
+    } else |_| {}
+}
+
 test "Value writes compact summary lines" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -914,4 +949,8 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .vaultwarden = .{ .user_count = 3 } }).write(&aw.writer);
     try std.testing.expectEqualStrings("3 users", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .maintainerr = .{ .reclaimable_count = 3, .reclaimable_bytes = 3221225472, .handled_count = 12 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("3.0 GiB reclaim 12 done", aw.written());
 }

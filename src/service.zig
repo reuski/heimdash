@@ -126,7 +126,7 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
         .sonarr, .radarr => {
             const cred = credential_value orelse return error.SummaryUnavailable;
             const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = cred }};
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &headers, null);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &headers, null);
             defer gpa.free(status_json);
             const queue_json = try fetchSummaryBody(&client, gpa, base_url, summary.arrQueueStatusPath(adapter).?, &headers, null);
             defer gpa.free(queue_json);
@@ -135,7 +135,7 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
         .prowlarr => {
             const cred = credential_value orelse return error.SummaryUnavailable;
             const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = cred }};
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &headers, null);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &headers, null);
             defer gpa.free(status_json);
             const health_json = try fetchSummaryBody(&client, gpa, base_url, summary.prowlarrHealthPath(), &headers, null);
             defer gpa.free(health_json);
@@ -146,7 +146,7 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
         .jellyfin => {
             const cred = credential_value orelse return error.SummaryUnavailable;
             const headers = [_]http.Header{.{ .name = "X-Emby-Token", .value = cred }};
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &headers, null);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &headers, null);
             defer gpa.free(status_json);
             const counts_json = try fetchSummaryBody(&client, gpa, base_url, summary.jellyfinItemCountsPath(), &headers, null);
             defer gpa.free(counts_json);
@@ -161,7 +161,7 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
                 @memset(value, 0);
                 gpa.free(value);
             };
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &.{}, authorization);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
             defer gpa.free(status_json);
             const stats_json = try fetchSummaryBody(&client, gpa, base_url, summary.adguardStatsPath(), &.{}, authorization);
             defer gpa.free(stats_json);
@@ -169,15 +169,14 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
         },
         .qbittorrent => {
             const cred = credential_value orelse return error.SummaryUnavailable;
-            const cookie = try fetchQbittorrentCookie(&client, gpa, base_url, cred);
+            const authorization = try summary.bearerAuthorizationValue(gpa, cred);
             defer {
-                @memset(cookie, 0);
-                gpa.free(cookie);
+                @memset(authorization, 0);
+                gpa.free(authorization);
             }
-            const headers = [_]http.Header{.{ .name = "Cookie", .value = cookie }};
-            const version_text = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &headers, null);
+            const version_text = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
             defer gpa.free(version_text);
-            const transfer_json = try fetchSummaryBody(&client, gpa, base_url, summary.qbittorrentTransferPath(), &headers, null);
+            const transfer_json = try fetchSummaryBody(&client, gpa, base_url, summary.qbittorrentTransferPath(), &.{}, authorization);
             defer gpa.free(transfer_json);
             return .{ .qbittorrent = try summary.parseQbittorrent(parse_arena, version_text, transfer_json) };
         },
@@ -189,13 +188,11 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
                 @memset(authorization, 0);
                 gpa.free(authorization);
             }
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &.{}, authorization);
-            defer gpa.free(status_json);
             const entity_path = try summary.homeAssistantStatePath(gpa, entity_id);
             defer gpa.free(entity_path);
             const entity_json = try fetchSummaryBody(&client, gpa, base_url, entity_path, &.{}, authorization);
             defer gpa.free(entity_json);
-            return .{ .home_assistant = try summary.parseHomeAssistant(parse_arena, status_json, entity_json) };
+            return .{ .home_assistant = try summary.parseHomeAssistant(parse_arena, entity_json) };
         },
         .audiobookshelf => {
             const cred = credential_value orelse return error.SummaryUnavailable;
@@ -204,7 +201,7 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
                 @memset(authorization, 0);
                 gpa.free(authorization);
             }
-            const libraries_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &.{}, authorization);
+            const libraries_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
             defer gpa.free(libraries_json);
             const library_ids = try summary.parseAudiobookshelfBookLibraries(parse_arena, libraries_json);
 
@@ -229,9 +226,14 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
                 gpa.free(cookie);
             }
             const headers = [_]http.Header{.{ .name = "Cookie", .value = cookie }};
-            const users_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter), &headers, null);
+            const users_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &headers, null);
             defer gpa.free(users_json);
             return .{ .vaultwarden = try summary.parseVaultwarden(parse_arena, users_json) };
+        },
+        .maintainerr => {
+            const metrics_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, null);
+            defer gpa.free(metrics_json);
+            return .{ .maintainerr = try summary.parseMaintainerr(parse_arena, metrics_json) };
         },
     }
 }
@@ -255,39 +257,6 @@ fn fetchSummaryBody(client: *http.Client, gpa: std.mem.Allocator, base_url: []co
 
     if (!summary.isAvailableHttpStatus(result.status)) return error.SummaryUnavailable;
     return try aw.toOwnedSlice();
-}
-
-fn fetchQbittorrentCookie(client: *http.Client, gpa: std.mem.Allocator, base_url: []const u8, credential_value: []const u8) ![]u8 {
-    const url = try endpointUrl(gpa, base_url, "/api/v2/auth/login");
-    defer gpa.free(url);
-    const body = try summary.qbittorrentLoginBody(gpa, credential_value);
-    defer {
-        @memset(body, 0);
-        gpa.free(body);
-    }
-
-    const uri = try std.Uri.parse(url);
-    const referer = std.mem.trimEnd(u8, base_url, "/");
-    const headers = [_]http.Header{.{ .name = "Referer", .value = referer }};
-    var req = try client.request(.POST, uri, .{
-        .redirect_behavior = .unhandled,
-        .keep_alive = false,
-        .headers = .{ .content_type = .{ .override = "application/x-www-form-urlencoded" } },
-        .extra_headers = &headers,
-    });
-    defer req.deinit();
-
-    try req.sendBodyComplete(body);
-    var response = try req.receiveHead(&.{});
-    if (!summary.isAvailableHttpStatus(response.head.status)) return error.SummaryUnavailable;
-
-    var it = response.head.iterateHeaders();
-    while (it.next()) |header| {
-        if (!std.ascii.eqlIgnoreCase(header.name, "set-cookie")) continue;
-        const cookie = summary.qbittorrentSessionCookie(header.value) orelse continue;
-        return try gpa.dupe(u8, cookie);
-    }
-    return error.SummaryUnavailable;
 }
 
 fn fetchVaultwardenCookie(client: *http.Client, gpa: std.mem.Allocator, base_url: []const u8, credential_value: []const u8) ![]u8 {

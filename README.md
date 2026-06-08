@@ -76,17 +76,18 @@ nix fmt
 
 ## Service Kinds
 
-| Kind             | Credential                   | Summary                 |
-| ---------------- | ---------------------------- | ----------------------- |
-| `adguard`        | optional `username:password` | protection, DNS stats   |
-| `jellyfin`       | API key                      | active streams          |
-| `sonarr`         | API key                      | queue count             |
-| `radarr`         | API key                      | queue count             |
-| `prowlarr`       | API key                      | indexers, health alerts |
-| `qbittorrent`    | `username:password`          | transfer rates          |
-| `home_assistant` | token + `entity`             | entity state            |
-| `audiobookshelf` | API token                    | book count, duration    |
-| `vaultwarden`    | admin token                  | registered users        |
+| Kind             | Credential                     | Summary                 |
+| ---------------- | ------------------------------ | ----------------------- |
+| `adguard`        | optional `username:password`   | protection, DNS stats   |
+| `jellyfin`       | API key                        | media count             |
+| `sonarr`         | API key                        | queue count             |
+| `radarr`         | API key                        | queue count             |
+| `prowlarr`       | API key                        | indexers, health alerts |
+| `qbittorrent`    | API key                        | transfer rates          |
+| `home_assistant` | token + `entity`               | entity state            |
+| `audiobookshelf` | API token                      | book count, duration    |
+| `vaultwarden`    | admin token                    | registered users        |
+| `maintainerr`    | none                           | reclaimable storage     |
 
 ## Credentials
 
