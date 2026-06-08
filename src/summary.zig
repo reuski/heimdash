@@ -14,11 +14,13 @@ pub const Adapter = enum {
     audiobookshelf,
     vaultwarden,
     maintainerr,
+    valheim,
+    calibre,
 };
 
 pub fn requiresCredential(adapter: Adapter) bool {
     return switch (adapter) {
-        .adguard, .maintainerr => false,
+        .adguard, .maintainerr, .valheim => false,
         else => true,
     };
 }
@@ -80,6 +82,16 @@ pub const Maintainerr = struct {
     handled_count: u64,
 };
 
+pub const Valheim = struct {
+    online: bool,
+    players: u8,
+    max_players: u8,
+};
+
+pub const Calibre = struct {
+    book_count: u64,
+};
+
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -95,6 +107,8 @@ pub const Value = union(enum) {
     audiobookshelf: Audiobookshelf,
     vaultwarden: Vaultwarden,
     maintainerr: Maintainerr,
+    valheim: Valheim,
+    calibre: Calibre,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -123,15 +137,20 @@ pub const Value = union(enum) {
                 if (item.duration_seconds > 0) try w.print(" {d}h", .{item.duration_seconds / 3600});
             },
             .vaultwarden => |item| try w.print("{d} users", .{item.user_count}),
-            .maintainerr => |item| {
-                if (item.reclaimable_bytes > 0) {
-                    var bytes_buf: [32]u8 = undefined;
-                    try w.print("{s} reclaim", .{format.bytes(&bytes_buf, item.reclaimable_bytes)});
-                } else {
-                    try w.print("{d} reclaim", .{item.reclaimable_count});
-                }
-                if (item.handled_count > 0) try w.print(" {d} done", .{item.handled_count});
+            .maintainerr => |item| if (item.reclaimable_bytes > 0) {
+                var bytes_buf: [32]u8 = undefined;
+                try w.print("\u{267B} {s}", .{format.bytes(&bytes_buf, item.reclaimable_bytes)});
+            } else {
+                try w.print("\u{267B} {d} items", .{item.reclaimable_count});
             },
+            .valheim => |item| if (!item.online) {
+                try w.writeAll("offline");
+            } else if (item.max_players > 0) {
+                try w.print("{d}/{d} online", .{ item.players, item.max_players });
+            } else {
+                try w.print("{d} online", .{item.players});
+            },
+            .calibre => |item| try w.print("{d} books", .{item.book_count}),
         }
     }
 };
@@ -228,6 +247,16 @@ const MaintainerrStorageMetricsJson = struct {
     collectionSummary: MaintainerrCollectionSummaryJson = .{},
 };
 
+const ValheimStatusJson = struct {
+    online: bool = false,
+    players: u8 = 0,
+    max_players: u8 = 0,
+};
+
+const CalibreStatsJson = struct {
+    books: u64 = 0,
+};
+
 pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "sonarr")) return .sonarr;
     if (std.ascii.eqlIgnoreCase(kind, "radarr")) return .radarr;
@@ -239,6 +268,8 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "audiobookshelf")) return .audiobookshelf;
     if (std.ascii.eqlIgnoreCase(kind, "vaultwarden")) return .vaultwarden;
     if (std.ascii.eqlIgnoreCase(kind, "maintainerr")) return .maintainerr;
+    if (std.ascii.eqlIgnoreCase(kind, "valheim")) return .valheim;
+    if (std.ascii.eqlIgnoreCase(kind, "calibre")) return .calibre;
     return null;
 }
 
@@ -253,6 +284,8 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .audiobookshelf => "/api/libraries",
         .vaultwarden => "/admin/users",
         .maintainerr => "/api/storage-metrics",
+        .valheim => "/status",
+        .calibre => "/opds/stats",
     };
 }
 
@@ -517,6 +550,20 @@ pub fn parseMaintainerr(allocator: std.mem.Allocator, metrics_json: []const u8) 
     };
 }
 
+pub fn parseValheim(allocator: std.mem.Allocator, status_json: []const u8) !Valheim {
+    const status = try std.json.parseFromSliceLeaky(ValheimStatusJson, allocator, status_json, .{
+        .ignore_unknown_fields = true,
+    });
+    return .{ .online = status.online, .players = status.players, .max_players = status.max_players };
+}
+
+pub fn parseCalibre(allocator: std.mem.Allocator, stats_json: []const u8) !Calibre {
+    const stats = try std.json.parseFromSliceLeaky(CalibreStatsJson, allocator, stats_json, .{
+        .ignore_unknown_fields = true,
+    });
+    return .{ .book_count = stats.books };
+}
+
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
     for (value) |c| {
         if (c == ' ') {
@@ -558,12 +605,16 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.audiobookshelf, adapterForKind("Audiobookshelf").?);
     try std.testing.expectEqual(Adapter.vaultwarden, adapterForKind("Vaultwarden").?);
     try std.testing.expectEqual(Adapter.maintainerr, adapterForKind("Maintainerr").?);
+    try std.testing.expectEqual(Adapter.valheim, adapterForKind("Valheim").?);
+    try std.testing.expectEqual(Adapter.calibre, adapterForKind("calibre").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
 test "requiresCredential is false only for unauthenticated summary endpoints" {
     try std.testing.expect(!requiresCredential(.adguard));
     try std.testing.expect(!requiresCredential(.maintainerr));
+    try std.testing.expect(!requiresCredential(.valheim));
+    try std.testing.expect(requiresCredential(.calibre));
     try std.testing.expect(requiresCredential(.sonarr));
     try std.testing.expect(requiresCredential(.qbittorrent));
     try std.testing.expect(requiresCredential(.home_assistant));
@@ -596,6 +647,8 @@ test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/admin/users", systemStatusPath(.vaultwarden).?);
     try std.testing.expectEqualStrings("/admin", vaultwardenLoginPath());
     try std.testing.expectEqualStrings("/api/storage-metrics", systemStatusPath(.maintainerr).?);
+    try std.testing.expectEqualStrings("/status", systemStatusPath(.valheim).?);
+    try std.testing.expectEqualStrings("/opds/stats", systemStatusPath(.calibre).?);
 }
 
 test "credential helpers trim files and reject header-breaking content" {
@@ -900,6 +953,42 @@ test "parseMaintainerr reads storage metrics" {
     } else |_| {}
 }
 
+test "parseValheim reads online state and player counts" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const item = try parseValheim(
+        arena_state.allocator(),
+        "{ \"name\": \"Lintukoto\", \"online\": true, \"players\": 2, \"max_players\": 10, \"map\": \"Lintukoto\" }",
+    );
+    try std.testing.expect(item.online);
+    try std.testing.expectEqual(@as(u8, 2), item.players);
+    try std.testing.expectEqual(@as(u8, 10), item.max_players);
+
+    const offline = try parseValheim(arena_state.allocator(), "{ \"online\": false }");
+    try std.testing.expect(!offline.online);
+    if (parseValheim(arena_state.allocator(), "{")) |_| {
+        return error.ExpectedMalformedJsonFailure;
+    } else |_| {}
+}
+
+test "parseCalibre reads book count" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const item = try parseCalibre(
+        arena_state.allocator(),
+        "{ \"books\": 128, \"authors\": 73, \"categories\": 12, \"series\": 9 }",
+    );
+    try std.testing.expectEqual(@as(u64, 128), item.book_count);
+
+    const empty = try parseCalibre(arena_state.allocator(), "{}");
+    try std.testing.expectEqual(@as(u64, 0), empty.book_count);
+    if (parseCalibre(arena_state.allocator(), "{")) |_| {
+        return error.ExpectedMalformedJsonFailure;
+    } else |_| {}
+}
+
 test "Value writes compact summary lines" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -952,5 +1041,25 @@ test "Value writes compact summary lines" {
 
     aw.clearRetainingCapacity();
     try (Value{ .maintainerr = .{ .reclaimable_count = 3, .reclaimable_bytes = 3221225472, .handled_count = 12 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("3.0 GiB reclaim 12 done", aw.written());
+    try std.testing.expectEqualStrings("\u{267B} 3.0 GiB", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .maintainerr = .{ .reclaimable_count = 5, .reclaimable_bytes = 0, .handled_count = 0 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("\u{267B} 5 items", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .valheim = .{ .online = true, .players = 2, .max_players = 10 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("2/10 online", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .valheim = .{ .online = true, .players = 0, .max_players = 0 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("0 online", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .valheim = .{ .online = false, .players = 0, .max_players = 0 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("offline", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .calibre = .{ .book_count = 128 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("128 books", aw.written());
 }

@@ -88,6 +88,8 @@ nix fmt
 | `audiobookshelf` | API token                    | book count, duration    |
 | `vaultwarden`    | admin token                  | registered users        |
 | `maintainerr`    | none                         | reclaimable storage     |
+| `valheim`        | none                         | online state, players   |
+| `calibre`        | `username:password`          | book count              |
 
 ## Credentials
 

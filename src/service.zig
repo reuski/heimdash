@@ -235,6 +235,22 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             defer gpa.free(metrics_json);
             return .{ .maintainerr = try summary.parseMaintainerr(parse_arena, metrics_json) };
         },
+        .valheim => {
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, null);
+            defer gpa.free(status_json);
+            return .{ .valheim = try summary.parseValheim(parse_arena, status_json) };
+        },
+        .calibre => {
+            const cred = credential_value orelse return error.SummaryUnavailable;
+            const authorization = try summary.basicAuthorizationValue(gpa, cred);
+            defer {
+                @memset(authorization, 0);
+                gpa.free(authorization);
+            }
+            const stats_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
+            defer gpa.free(stats_json);
+            return .{ .calibre = try summary.parseCalibre(parse_arena, stats_json) };
+        },
     }
 }
 
