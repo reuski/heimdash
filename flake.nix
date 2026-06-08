@@ -9,15 +9,6 @@
 
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
-
-    zig-overlay.url = "github:mitchellh/zig-overlay";
-    zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
-
-    zls = {
-      url = "github:zigtools/zls";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.zig-overlay.follows = "zig-overlay";
-    };
   };
 
   outputs =
@@ -31,12 +22,10 @@
         {
           config,
           pkgs,
-          system,
           ...
         }:
         let
-          zig = inputs.zig-overlay.packages.${system}.master;
-          zls = inputs.zls.packages.${system}.zls;
+          inherit (pkgs) zig zls;
         in
         {
           packages.default = pkgs.stdenv.mkDerivation {
