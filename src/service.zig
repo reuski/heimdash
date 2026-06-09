@@ -251,6 +251,11 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             defer gpa.free(stats_json);
             return .{ .calibre = try summary.parseCalibre(parse_arena, stats_json) };
         },
+        .skaldi => {
+            const health_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, null);
+            defer gpa.free(health_json);
+            return .{ .skaldi = try summary.parseSkaldi(parse_arena, health_json) };
+        },
     }
 }
 

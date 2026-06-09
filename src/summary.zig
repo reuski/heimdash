@@ -16,11 +16,12 @@ pub const Adapter = enum {
     maintainerr,
     valheim,
     calibre,
+    skaldi,
 };
 
 pub fn requiresCredential(adapter: Adapter) bool {
     return switch (adapter) {
-        .adguard, .maintainerr, .valheim => false,
+        .adguard, .maintainerr, .valheim, .skaldi => false,
         else => true,
     };
 }
@@ -92,6 +93,13 @@ pub const Calibre = struct {
     book_count: u64,
 };
 
+pub const Skaldi = struct {
+    playback: Playback,
+    queue: u64,
+
+    pub const Playback = enum { idle, playing, paused, unknown };
+};
+
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -109,6 +117,7 @@ pub const Value = union(enum) {
     maintainerr: Maintainerr,
     valheim: Valheim,
     calibre: Calibre,
+    skaldi: Skaldi,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -139,9 +148,9 @@ pub const Value = union(enum) {
             .vaultwarden => |item| try w.print("{d} users", .{item.user_count}),
             .maintainerr => |item| if (item.reclaimable_bytes > 0) {
                 var bytes_buf: [32]u8 = undefined;
-                try w.print("\u{267B} {s}", .{format.bytes(&bytes_buf, item.reclaimable_bytes)});
+                try w.writeAll(format.bytes(&bytes_buf, item.reclaimable_bytes));
             } else {
-                try w.print("\u{267B} {d} items", .{item.reclaimable_count});
+                try w.print("{d} items", .{item.reclaimable_count});
             },
             .valheim => |item| if (!item.online) {
                 try w.writeAll("offline");
@@ -151,6 +160,11 @@ pub const Value = union(enum) {
                 try w.print("{d} online", .{item.players});
             },
             .calibre => |item| try w.print("{d} books", .{item.book_count}),
+            .skaldi => |item| switch (item.playback) {
+                .idle, .unknown => try w.print("{d} queued", .{item.queue}),
+                .playing => try w.print("\u{25B6} {d} queued", .{item.queue}),
+                .paused => try w.print("\u{23F8} {d} queued", .{item.queue}),
+            },
         }
     }
 };
@@ -257,6 +271,11 @@ const CalibreStatsJson = struct {
     books: u64 = 0,
 };
 
+const SkaldiHealthJson = struct {
+    playback: []const u8 = "",
+    queue: u64 = 0,
+};
+
 pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "sonarr")) return .sonarr;
     if (std.ascii.eqlIgnoreCase(kind, "radarr")) return .radarr;
@@ -270,6 +289,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "maintainerr")) return .maintainerr;
     if (std.ascii.eqlIgnoreCase(kind, "valheim")) return .valheim;
     if (std.ascii.eqlIgnoreCase(kind, "calibre")) return .calibre;
+    if (std.ascii.eqlIgnoreCase(kind, "skaldi")) return .skaldi;
     return null;
 }
 
@@ -286,6 +306,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .maintainerr => "/api/storage-metrics",
         .valheim => "/status",
         .calibre => "/opds/stats",
+        .skaldi => "/health",
     };
 }
 
@@ -564,6 +585,21 @@ pub fn parseCalibre(allocator: std.mem.Allocator, stats_json: []const u8) !Calib
     return .{ .book_count = stats.books };
 }
 
+pub fn parseSkaldi(allocator: std.mem.Allocator, health_json: []const u8) !Skaldi {
+    const health = try std.json.parseFromSliceLeaky(SkaldiHealthJson, allocator, health_json, .{
+        .ignore_unknown_fields = true,
+    });
+    const playback: Skaldi.Playback = if (std.mem.eql(u8, health.playback, "playing"))
+        .playing
+    else if (std.mem.eql(u8, health.playback, "paused"))
+        .paused
+    else if (std.mem.eql(u8, health.playback, "idle"))
+        .idle
+    else
+        .unknown;
+    return .{ .playback = playback, .queue = health.queue };
+}
+
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
     for (value) |c| {
         if (c == ' ') {
@@ -607,6 +643,7 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.maintainerr, adapterForKind("Maintainerr").?);
     try std.testing.expectEqual(Adapter.valheim, adapterForKind("Valheim").?);
     try std.testing.expectEqual(Adapter.calibre, adapterForKind("calibre").?);
+    try std.testing.expectEqual(Adapter.skaldi, adapterForKind("Skaldi").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
@@ -614,6 +651,7 @@ test "requiresCredential is false only for unauthenticated summary endpoints" {
     try std.testing.expect(!requiresCredential(.adguard));
     try std.testing.expect(!requiresCredential(.maintainerr));
     try std.testing.expect(!requiresCredential(.valheim));
+    try std.testing.expect(!requiresCredential(.skaldi));
     try std.testing.expect(requiresCredential(.calibre));
     try std.testing.expect(requiresCredential(.sonarr));
     try std.testing.expect(requiresCredential(.qbittorrent));
@@ -649,6 +687,7 @@ test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/api/storage-metrics", systemStatusPath(.maintainerr).?);
     try std.testing.expectEqualStrings("/status", systemStatusPath(.valheim).?);
     try std.testing.expectEqualStrings("/opds/stats", systemStatusPath(.calibre).?);
+    try std.testing.expectEqualStrings("/health", systemStatusPath(.skaldi).?);
 }
 
 test "credential helpers trim files and reject header-breaking content" {
@@ -989,6 +1028,27 @@ test "parseCalibre reads book count" {
     } else |_| {}
 }
 
+test "parseSkaldi reads playback state and queue size" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const playing = try parseSkaldi(
+        arena_state.allocator(),
+        "{ \"status\": \"ok\", \"version\": \"v0.2.0\", \"playback\": \"playing\", \"now_playing\": \"Song\", \"queue\": 4 }",
+    );
+    try std.testing.expectEqual(Skaldi.Playback.playing, playing.playback);
+    try std.testing.expectEqual(@as(u64, 4), playing.queue);
+
+    const idle = try parseSkaldi(arena_state.allocator(), "{ \"playback\": \"idle\", \"queue\": 0 }");
+    try std.testing.expectEqual(Skaldi.Playback.idle, idle.playback);
+
+    const empty = try parseSkaldi(arena_state.allocator(), "{}");
+    try std.testing.expectEqual(Skaldi.Playback.unknown, empty.playback);
+    if (parseSkaldi(arena_state.allocator(), "{")) |_| {
+        return error.ExpectedMalformedJsonFailure;
+    } else |_| {}
+}
+
 test "Value writes compact summary lines" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -1041,11 +1101,11 @@ test "Value writes compact summary lines" {
 
     aw.clearRetainingCapacity();
     try (Value{ .maintainerr = .{ .reclaimable_count = 3, .reclaimable_bytes = 3221225472, .handled_count = 12 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("\u{267B} 3.0 GiB", aw.written());
+    try std.testing.expectEqualStrings("3.0 GiB", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .maintainerr = .{ .reclaimable_count = 5, .reclaimable_bytes = 0, .handled_count = 0 } }).write(&aw.writer);
-    try std.testing.expectEqualStrings("\u{267B} 5 items", aw.written());
+    try std.testing.expectEqualStrings("5 items", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .valheim = .{ .online = true, .players = 2, .max_players = 10 } }).write(&aw.writer);
@@ -1062,4 +1122,16 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .calibre = .{ .book_count = 128 } }).write(&aw.writer);
     try std.testing.expectEqualStrings("128 books", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .skaldi = .{ .playback = .playing, .queue = 4 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("\u{25B6} 4 queued", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .skaldi = .{ .playback = .paused, .queue = 4 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("\u{23F8} 4 queued", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .skaldi = .{ .playback = .idle, .queue = 0 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("0 queued", aw.written());
 }
