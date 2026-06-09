@@ -17,11 +17,12 @@ pub const Adapter = enum {
     valheim,
     calibre,
     skaldi,
+    tome,
 };
 
 pub fn requiresCredential(adapter: Adapter) bool {
     return switch (adapter) {
-        .adguard, .maintainerr, .valheim, .skaldi => false,
+        .adguard, .maintainerr, .valheim, .skaldi, .tome => false,
         else => true,
     };
 }
@@ -100,6 +101,11 @@ pub const Skaldi = struct {
     pub const Playback = enum { idle, playing, paused, unknown };
 };
 
+pub const Tome = struct {
+    currently_reading: u64,
+    books_read_this_year: u64,
+};
+
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -118,6 +124,7 @@ pub const Value = union(enum) {
     valheim: Valheim,
     calibre: Calibre,
     skaldi: Skaldi,
+    tome: Tome,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -165,6 +172,7 @@ pub const Value = union(enum) {
                 .playing => try w.print("\u{25B6} {d} queued", .{item.queue}),
                 .paused => try w.print("\u{23F8} {d} queued", .{item.queue}),
             },
+            .tome => |item| try w.print("{d} reading {d} yr", .{ item.currently_reading, item.books_read_this_year }),
         }
     }
 };
@@ -276,6 +284,15 @@ const SkaldiHealthJson = struct {
     queue: u64 = 0,
 };
 
+const TomeBooksReadJson = struct {
+    thisYear: u64 = 0,
+};
+
+const TomeOverviewJson = struct {
+    currentlyReading: u64 = 0,
+    booksRead: TomeBooksReadJson = .{},
+};
+
 pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "sonarr")) return .sonarr;
     if (std.ascii.eqlIgnoreCase(kind, "radarr")) return .radarr;
@@ -290,6 +307,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "valheim")) return .valheim;
     if (std.ascii.eqlIgnoreCase(kind, "calibre")) return .calibre;
     if (std.ascii.eqlIgnoreCase(kind, "skaldi")) return .skaldi;
+    if (std.ascii.eqlIgnoreCase(kind, "tome")) return .tome;
     return null;
 }
 
@@ -307,6 +325,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .valheim => "/status",
         .calibre => "/opds/stats",
         .skaldi => "/health",
+        .tome => "/api/stats/overview",
     };
 }
 
@@ -600,6 +619,16 @@ pub fn parseSkaldi(allocator: std.mem.Allocator, health_json: []const u8) !Skald
     return .{ .playback = playback, .queue = health.queue };
 }
 
+pub fn parseTome(allocator: std.mem.Allocator, overview_json: []const u8) !Tome {
+    const overview = try std.json.parseFromSliceLeaky(TomeOverviewJson, allocator, overview_json, .{
+        .ignore_unknown_fields = true,
+    });
+    return .{
+        .currently_reading = overview.currentlyReading,
+        .books_read_this_year = overview.booksRead.thisYear,
+    };
+}
+
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
     for (value) |c| {
         if (c == ' ') {
@@ -644,6 +673,7 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.valheim, adapterForKind("Valheim").?);
     try std.testing.expectEqual(Adapter.calibre, adapterForKind("calibre").?);
     try std.testing.expectEqual(Adapter.skaldi, adapterForKind("Skaldi").?);
+    try std.testing.expectEqual(Adapter.tome, adapterForKind("Tome").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
@@ -652,6 +682,7 @@ test "requiresCredential is false only for unauthenticated summary endpoints" {
     try std.testing.expect(!requiresCredential(.maintainerr));
     try std.testing.expect(!requiresCredential(.valheim));
     try std.testing.expect(!requiresCredential(.skaldi));
+    try std.testing.expect(!requiresCredential(.tome));
     try std.testing.expect(requiresCredential(.calibre));
     try std.testing.expect(requiresCredential(.sonarr));
     try std.testing.expect(requiresCredential(.qbittorrent));
@@ -688,6 +719,7 @@ test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/status", systemStatusPath(.valheim).?);
     try std.testing.expectEqualStrings("/opds/stats", systemStatusPath(.calibre).?);
     try std.testing.expectEqualStrings("/health", systemStatusPath(.skaldi).?);
+    try std.testing.expectEqualStrings("/api/stats/overview", systemStatusPath(.tome).?);
 }
 
 test "credential helpers trim files and reject header-breaking content" {
@@ -1049,6 +1081,25 @@ test "parseSkaldi reads playback state and queue size" {
     } else |_| {}
 }
 
+test "parseTome reads currently reading and books read this year" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const item = try parseTome(
+        arena_state.allocator(),
+        "{ \"booksRead\": { \"total\": 318, \"thisYear\": 12, \"thisMonth\": 2 }, \"currentlyReading\": 2, \"pagesRead\": { \"today\": 30 }, \"avgPagesPerDay\": 41 }",
+    );
+    try std.testing.expectEqual(@as(u64, 2), item.currently_reading);
+    try std.testing.expectEqual(@as(u64, 12), item.books_read_this_year);
+
+    const empty = try parseTome(arena_state.allocator(), "{}");
+    try std.testing.expectEqual(@as(u64, 0), empty.currently_reading);
+    try std.testing.expectEqual(@as(u64, 0), empty.books_read_this_year);
+    if (parseTome(arena_state.allocator(), "{")) |_| {
+        return error.ExpectedMalformedJsonFailure;
+    } else |_| {}
+}
+
 test "Value writes compact summary lines" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -1134,4 +1185,8 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .skaldi = .{ .playback = .idle, .queue = 0 } }).write(&aw.writer);
     try std.testing.expectEqualStrings("0 queued", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .tome = .{ .currently_reading = 2, .books_read_this_year = 12 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("2 reading 12 yr", aw.written());
 }
