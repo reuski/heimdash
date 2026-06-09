@@ -6,6 +6,7 @@ const format = @import("format.zig");
 pub const Adapter = enum {
     sonarr,
     radarr,
+    lidarr,
     prowlarr,
     jellyfin,
     adguard,
@@ -16,6 +17,7 @@ pub const Adapter = enum {
     maintainerr,
     valheim,
     calibre,
+    navidrome,
     skaldi,
     tome,
 };
@@ -94,6 +96,10 @@ pub const Calibre = struct {
     book_count: u64,
 };
 
+pub const Navidrome = struct {
+    song_count: u64,
+};
+
 pub const Skaldi = struct {
     playback: Playback,
     queue: u64,
@@ -123,6 +129,7 @@ pub const Value = union(enum) {
     maintainerr: Maintainerr,
     valheim: Valheim,
     calibre: Calibre,
+    navidrome: Navidrome,
     skaldi: Skaldi,
     tome: Tome,
 
@@ -167,6 +174,7 @@ pub const Value = union(enum) {
                 try w.print("{d} online", .{item.players});
             },
             .calibre => |item| try w.print("{d} books", .{item.book_count}),
+            .navidrome => |item| try w.print("{d} songs", .{item.song_count}),
             .skaldi => |item| switch (item.playback) {
                 .idle, .unknown => try w.print("{d} queued", .{item.queue}),
                 .playing => try w.print("\u{25B6} {d} queued", .{item.queue}),
@@ -275,8 +283,18 @@ const ValheimStatusJson = struct {
     max_players: u8 = 0,
 };
 
-const CalibreStatsJson = struct {
-    books: u64 = 0,
+const NavidromeScanStatusJson = struct {
+    count: u64 = 0,
+    folderCount: u64 = 0,
+};
+
+const NavidromeResponseJson = struct {
+    status: []const u8 = "",
+    scanStatus: NavidromeScanStatusJson = .{},
+};
+
+const NavidromeStatusJson = struct {
+    @"subsonic-response": NavidromeResponseJson = .{},
 };
 
 const SkaldiHealthJson = struct {
@@ -296,6 +314,7 @@ const TomeOverviewJson = struct {
 pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "sonarr")) return .sonarr;
     if (std.ascii.eqlIgnoreCase(kind, "radarr")) return .radarr;
+    if (std.ascii.eqlIgnoreCase(kind, "lidarr")) return .lidarr;
     if (std.ascii.eqlIgnoreCase(kind, "prowlarr")) return .prowlarr;
     if (std.ascii.eqlIgnoreCase(kind, "jellyfin")) return .jellyfin;
     if (std.ascii.eqlIgnoreCase(kind, "adguard")) return .adguard;
@@ -306,6 +325,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "maintainerr")) return .maintainerr;
     if (std.ascii.eqlIgnoreCase(kind, "valheim")) return .valheim;
     if (std.ascii.eqlIgnoreCase(kind, "calibre")) return .calibre;
+    if (std.ascii.eqlIgnoreCase(kind, "navidrome")) return .navidrome;
     if (std.ascii.eqlIgnoreCase(kind, "skaldi")) return .skaldi;
     if (std.ascii.eqlIgnoreCase(kind, "tome")) return .tome;
     return null;
@@ -314,6 +334,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
 pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
     return switch (adapter) {
         .sonarr, .radarr => "/api/v3/system/status",
+        .lidarr => "/api/v1/system/status",
         .prowlarr => "/api/v1/system/status",
         .jellyfin => "/System/Info",
         .adguard => "/control/status",
@@ -323,7 +344,8 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .vaultwarden => "/admin/users",
         .maintainerr => "/api/storage-metrics",
         .valheim => "/status",
-        .calibre => "/opds/stats",
+        .calibre => "/opds/new",
+        .navidrome => "/rest/getScanStatus.view",
         .skaldi => "/health",
         .tome => "/api/stats/overview",
     };
@@ -332,6 +354,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
 pub fn arrQueueStatusPath(adapter: Adapter) ?[]const u8 {
     return switch (adapter) {
         .sonarr, .radarr => "/api/v3/queue/status",
+        .lidarr => "/api/v1/queue/status",
         else => null,
     };
 }
@@ -408,6 +431,29 @@ pub fn basicAuthorizationValue(allocator: std.mem.Allocator, bytes: []const u8) 
 pub fn bearerAuthorizationValue(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     const value = credentialHeaderValue(bytes) orelse return error.InvalidCredential;
     return try std.fmt.allocPrint(allocator, "Bearer {s}", .{value});
+}
+
+pub fn navidromeAuthQuery(allocator: std.mem.Allocator, bytes: []const u8, salt: []const u8) ![]u8 {
+    const account = userPassword(bytes) orelse return error.InvalidCredential;
+    if (salt.len == 0) return error.InvalidCredential;
+
+    var digest: [std.crypto.hash.Md5.digest_length]u8 = undefined;
+    var hash = std.crypto.hash.Md5.init(.{});
+    hash.update(account.password);
+    hash.update(salt);
+    hash.final(&digest);
+    const token = std.fmt.bytesToHex(digest, .lower);
+
+    var aw: Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    try aw.writer.writeAll("u=");
+    try writeFormValue(&aw.writer, account.username);
+    try aw.writer.writeAll("&t=");
+    try aw.writer.writeAll(&token);
+    try aw.writer.writeAll("&s=");
+    try writeFormValue(&aw.writer, salt);
+    try aw.writer.writeAll("&v=1.16.1&c=heimdash&f=json");
+    return try aw.toOwnedSlice();
 }
 
 pub fn vaultwardenLoginPath() []const u8 {
@@ -597,11 +643,28 @@ pub fn parseValheim(allocator: std.mem.Allocator, status_json: []const u8) !Valh
     return .{ .online = status.online, .players = status.players, .max_players = status.max_players };
 }
 
-pub fn parseCalibre(allocator: std.mem.Allocator, stats_json: []const u8) !Calibre {
-    const stats = try std.json.parseFromSliceLeaky(CalibreStatsJson, allocator, stats_json, .{
+pub fn parseCalibre(feed_xml: []const u8) !Calibre {
+    const book_count = opensearchTotalResults(feed_xml) orelse return error.MissingBookCount;
+    return .{ .book_count = book_count };
+}
+
+fn opensearchTotalResults(feed_xml: []const u8) ?u64 {
+    const marker = "totalResults>";
+    const start = std.mem.indexOf(u8, feed_xml, marker) orelse return null;
+    const rest = std.mem.trimStart(u8, feed_xml[start + marker.len ..], " \t\r\n");
+    var end: usize = 0;
+    while (end < rest.len and std.ascii.isDigit(rest[end])) end += 1;
+    if (end == 0) return null;
+    return std.fmt.parseInt(u64, rest[0..end], 10) catch null;
+}
+
+pub fn parseNavidrome(allocator: std.mem.Allocator, status_json: []const u8) !Navidrome {
+    const parsed = try std.json.parseFromSliceLeaky(NavidromeStatusJson, allocator, status_json, .{
         .ignore_unknown_fields = true,
     });
-    return .{ .book_count = stats.books };
+    const response = parsed.@"subsonic-response";
+    if (!std.mem.eql(u8, response.status, "ok")) return error.SummaryUnavailable;
+    return .{ .song_count = response.scanStatus.count };
 }
 
 pub fn parseSkaldi(allocator: std.mem.Allocator, health_json: []const u8) !Skaldi {
@@ -662,6 +725,7 @@ fn isUriPathSegmentUnreserved(c: u8) bool {
 test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.sonarr, adapterForKind("sonarr").?);
     try std.testing.expectEqual(Adapter.radarr, adapterForKind("Radarr").?);
+    try std.testing.expectEqual(Adapter.lidarr, adapterForKind("Lidarr").?);
     try std.testing.expectEqual(Adapter.prowlarr, adapterForKind("PROWLARR").?);
     try std.testing.expectEqual(Adapter.jellyfin, adapterForKind("jellyfin").?);
     try std.testing.expectEqual(Adapter.adguard, adapterForKind("ADGUARD").?);
@@ -672,6 +736,7 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.maintainerr, adapterForKind("Maintainerr").?);
     try std.testing.expectEqual(Adapter.valheim, adapterForKind("Valheim").?);
     try std.testing.expectEqual(Adapter.calibre, adapterForKind("calibre").?);
+    try std.testing.expectEqual(Adapter.navidrome, adapterForKind("Navidrome").?);
     try std.testing.expectEqual(Adapter.skaldi, adapterForKind("Skaldi").?);
     try std.testing.expectEqual(Adapter.tome, adapterForKind("Tome").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
@@ -684,6 +749,8 @@ test "requiresCredential is false only for unauthenticated summary endpoints" {
     try std.testing.expect(!requiresCredential(.skaldi));
     try std.testing.expect(!requiresCredential(.tome));
     try std.testing.expect(requiresCredential(.calibre));
+    try std.testing.expect(requiresCredential(.navidrome));
+    try std.testing.expect(requiresCredential(.lidarr));
     try std.testing.expect(requiresCredential(.sonarr));
     try std.testing.expect(requiresCredential(.qbittorrent));
     try std.testing.expect(requiresCredential(.home_assistant));
@@ -693,6 +760,8 @@ test "requiresCredential is false only for unauthenticated summary endpoints" {
 test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/api/v3/system/status", systemStatusPath(.sonarr).?);
     try std.testing.expectEqualStrings("/api/v3/queue/status", arrQueueStatusPath(.radarr).?);
+    try std.testing.expectEqualStrings("/api/v1/system/status", systemStatusPath(.lidarr).?);
+    try std.testing.expectEqualStrings("/api/v1/queue/status", arrQueueStatusPath(.lidarr).?);
     try std.testing.expectEqualStrings("/api/v1/system/status", systemStatusPath(.prowlarr).?);
     try std.testing.expectEqualStrings("/api/v1/health", prowlarrHealthPath());
     try std.testing.expectEqualStrings("/api/v1/indexer", prowlarrIndexerPath());
@@ -717,7 +786,8 @@ test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/admin", vaultwardenLoginPath());
     try std.testing.expectEqualStrings("/api/storage-metrics", systemStatusPath(.maintainerr).?);
     try std.testing.expectEqualStrings("/status", systemStatusPath(.valheim).?);
-    try std.testing.expectEqualStrings("/opds/stats", systemStatusPath(.calibre).?);
+    try std.testing.expectEqualStrings("/opds/new", systemStatusPath(.calibre).?);
+    try std.testing.expectEqualStrings("/rest/getScanStatus.view", systemStatusPath(.navidrome).?);
     try std.testing.expectEqualStrings("/health", systemStatusPath(.skaldi).?);
     try std.testing.expectEqualStrings("/api/stats/overview", systemStatusPath(.tome).?);
 }
@@ -1043,21 +1113,46 @@ test "parseValheim reads online state and player counts" {
     } else |_| {}
 }
 
-test "parseCalibre reads book count" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-
+test "parseCalibre reads OPDS total book count" {
     const item = try parseCalibre(
-        arena_state.allocator(),
-        "{ \"books\": 128, \"authors\": 73, \"categories\": 12, \"series\": 9 }",
+        "<?xml version=\"1.0\"?><feed xmlns:opensearch=\"http://a9.com/-/spec/opensearch/1.1/\">" ++
+            "<opensearch:totalResults>128</opensearch:totalResults>" ++
+            "<opensearch:itemsPerPage>60</opensearch:itemsPerPage><entry/></feed>",
     );
     try std.testing.expectEqual(@as(u64, 128), item.book_count);
 
-    const empty = try parseCalibre(arena_state.allocator(), "{}");
-    try std.testing.expectEqual(@as(u64, 0), empty.book_count);
-    if (parseCalibre(arena_state.allocator(), "{")) |_| {
+    try std.testing.expectError(error.MissingBookCount, parseCalibre("<feed><entry/></feed>"));
+    try std.testing.expectError(error.MissingBookCount, parseCalibre("<opensearch:totalResults></opensearch:totalResults>"));
+}
+
+test "parseNavidrome reads song count from subsonic scan status" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const item = try parseNavidrome(
+        arena_state.allocator(),
+        "{ \"subsonic-response\": { \"status\": \"ok\", \"version\": \"1.16.1\", \"type\": \"navidrome\", \"scanStatus\": { \"scanning\": false, \"folderCount\": 3, \"count\": 12345 } } }",
+    );
+    try std.testing.expectEqual(@as(u64, 12345), item.song_count);
+
+    try std.testing.expectError(error.SummaryUnavailable, parseNavidrome(
+        arena_state.allocator(),
+        "{ \"subsonic-response\": { \"status\": \"failed\", \"error\": { \"code\": 40 } } }",
+    ));
+    if (parseNavidrome(arena_state.allocator(), "{")) |_| {
         return error.ExpectedMalformedJsonFailure;
     } else |_| {}
+}
+
+test "navidromeAuthQuery derives salted subsonic token" {
+    const query = try navidromeAuthQuery(std.testing.allocator, " admin:s3cret\n", "c19b2d");
+    defer std.testing.allocator.free(query);
+    try std.testing.expectEqualStrings(
+        "u=admin&t=a34b73cdd2cd20e8d06d1bff5f11cd3b&s=c19b2d&v=1.16.1&c=heimdash&f=json",
+        query,
+    );
+    try std.testing.expectError(error.InvalidCredential, navidromeAuthQuery(std.testing.allocator, "admin:s3cret", ""));
+    try std.testing.expectError(error.InvalidCredential, navidromeAuthQuery(std.testing.allocator, "admin", "salt"));
 }
 
 test "parseSkaldi reads playback state and queue size" {
@@ -1173,6 +1268,10 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .calibre = .{ .book_count = 128 } }).write(&aw.writer);
     try std.testing.expectEqualStrings("128 books", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .navidrome = .{ .song_count = 12345 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("12345 songs", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .skaldi = .{ .playback = .playing, .queue = 4 } }).write(&aw.writer);

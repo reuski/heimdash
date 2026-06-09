@@ -82,6 +82,7 @@ nix fmt
 | `jellyfin`       | API key                      | media count              |
 | `sonarr`         | API key                      | queue count              |
 | `radarr`         | API key                      | queue count              |
+| `lidarr`         | API key                      | queue count              |
 | `prowlarr`       | API key                      | indexers, health alerts  |
 | `qbittorrent`    | API key                      | transfer rates           |
 | `home_assistant` | token + `entity`             | entity state             |
@@ -90,6 +91,7 @@ nix fmt
 | `maintainerr`    | none                         | reclaimable storage      |
 | `valheim`        | none                         | online state, players    |
 | `calibre`        | `username:password`          | book count               |
+| `navidrome`      | `username:password`          | song count               |
 | `tome`           | none                         | reading, books this year |
 
 ## Credentials

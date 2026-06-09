@@ -123,7 +123,7 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
     defer client.deinit();
 
     switch (adapter) {
-        .sonarr, .radarr => {
+        .sonarr, .radarr, .lidarr => {
             const cred = credential_value orelse return error.SummaryUnavailable;
             const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = cred }};
             const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &headers, null);
@@ -247,9 +247,22 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
                 @memset(authorization, 0);
                 gpa.free(authorization);
             }
-            const stats_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
-            defer gpa.free(stats_json);
-            return .{ .calibre = try summary.parseCalibre(parse_arena, stats_json) };
+            const feed_xml = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
+            defer gpa.free(feed_xml);
+            return .{ .calibre = try summary.parseCalibre(feed_xml) };
+        },
+        .navidrome => {
+            const cred = credential_value orelse return error.SummaryUnavailable;
+            var salt_bytes: [8]u8 = undefined;
+            io.random(&salt_bytes);
+            const salt = std.fmt.bytesToHex(salt_bytes, .lower);
+            const query = try summary.navidromeAuthQuery(gpa, cred, &salt);
+            defer gpa.free(query);
+            const path = try std.fmt.allocPrint(gpa, "{s}?{s}", .{ summary.systemStatusPath(adapter).?, query });
+            defer gpa.free(path);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, path, &.{}, null);
+            defer gpa.free(status_json);
+            return .{ .navidrome = try summary.parseNavidrome(parse_arena, status_json) };
         },
         .skaldi => {
             const health_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, null);
