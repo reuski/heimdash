@@ -20,11 +20,36 @@ pub const Adapter = enum {
     navidrome,
     skaldi,
     tome,
+    mumble,
 };
 
-pub fn requiresCredential(adapter: Adapter) bool {
+pub const Auth = enum {
+    none,
+    api_key,
+    emby_token,
+    bearer,
+    basic,
+    basic_optional,
+    subsonic,
+    session_cookie,
+};
+
+pub fn authMethod(adapter: Adapter) Auth {
     return switch (adapter) {
-        .adguard, .maintainerr, .valheim, .skaldi, .tome => false,
+        .maintainerr, .valheim, .skaldi, .tome, .mumble => .none,
+        .sonarr, .radarr, .lidarr, .prowlarr => .api_key,
+        .jellyfin => .emby_token,
+        .qbittorrent, .home_assistant, .audiobookshelf => .bearer,
+        .calibre => .basic,
+        .adguard => .basic_optional,
+        .navidrome => .subsonic,
+        .vaultwarden => .session_cookie,
+    };
+}
+
+pub fn requiresCredential(adapter: Adapter) bool {
+    return switch (authMethod(adapter)) {
+        .none, .basic_optional => false,
         else => true,
     };
 }
@@ -112,6 +137,11 @@ pub const Tome = struct {
     books_read_this_year: u64,
 };
 
+pub const Mumble = struct {
+    users: u32,
+    max_users: u32,
+};
+
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -132,6 +162,7 @@ pub const Value = union(enum) {
     navidrome: Navidrome,
     skaldi: Skaldi,
     tome: Tome,
+    mumble: Mumble,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -181,6 +212,11 @@ pub const Value = union(enum) {
                 .paused => try w.print("\u{23F8} {d} queued", .{item.queue}),
             },
             .tome => |item| try w.print("{d} reading {d} yr", .{ item.currently_reading, item.books_read_this_year }),
+            .mumble => |item| if (item.max_users > 0) {
+                try w.print("{d}/{d} online", .{ item.users, item.max_users });
+            } else {
+                try w.print("{d} online", .{item.users});
+            },
         }
     }
 };
@@ -328,6 +364,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "navidrome")) return .navidrome;
     if (std.ascii.eqlIgnoreCase(kind, "skaldi")) return .skaldi;
     if (std.ascii.eqlIgnoreCase(kind, "tome")) return .tome;
+    if (std.ascii.eqlIgnoreCase(kind, "mumble")) return .mumble;
     return null;
 }
 
@@ -348,6 +385,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .navidrome => "/rest/getScanStatus.view",
         .skaldi => "/health",
         .tome => "/api/stats/overview",
+        .mumble => null,
     };
 }
 
@@ -682,6 +720,38 @@ pub fn parseSkaldi(allocator: std.mem.Allocator, health_json: []const u8) !Skald
     return .{ .playback = playback, .queue = health.queue };
 }
 
+pub const UdpEndpoint = struct {
+    host: []const u8,
+    port: u16,
+};
+
+pub fn udpEndpoint(url: []const u8) !UdpEndpoint {
+    const prefix = "udp://";
+    if (!std.mem.startsWith(u8, url, prefix)) return error.InvalidEndpoint;
+    const authority = url[prefix.len..];
+    const sep = std.mem.lastIndexOfScalar(u8, authority, ':') orelse return error.InvalidEndpoint;
+    const host = authority[0..sep];
+    if (host.len == 0) return error.InvalidEndpoint;
+    const port = std.fmt.parseInt(u16, authority[sep + 1 ..], 10) catch return error.InvalidEndpoint;
+    if (port == 0) return error.InvalidEndpoint;
+    return .{ .host = host, .port = port };
+}
+
+pub fn mumblePingRequest(ident: u64) [12]u8 {
+    var request = [_]u8{0} ** 12;
+    std.mem.writeInt(u64, request[4..12], ident, .big);
+    return request;
+}
+
+pub fn parseMumblePing(reply: []const u8, ident: u64) !Mumble {
+    if (reply.len < 24) return error.SummaryUnavailable;
+    if (std.mem.readInt(u64, reply[4..12], .big) != ident) return error.SummaryUnavailable;
+    return .{
+        .users = std.mem.readInt(u32, reply[12..16], .big),
+        .max_users = std.mem.readInt(u32, reply[16..20], .big),
+    };
+}
+
 pub fn parseTome(allocator: std.mem.Allocator, overview_json: []const u8) !Tome {
     const overview = try std.json.parseFromSliceLeaky(TomeOverviewJson, allocator, overview_json, .{
         .ignore_unknown_fields = true,
@@ -739,7 +809,20 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.navidrome, adapterForKind("Navidrome").?);
     try std.testing.expectEqual(Adapter.skaldi, adapterForKind("Skaldi").?);
     try std.testing.expectEqual(Adapter.tome, adapterForKind("Tome").?);
+    try std.testing.expectEqual(Adapter.mumble, adapterForKind("Mumble").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
+}
+
+test "authMethod maps each adapter to its credential mechanism" {
+    try std.testing.expectEqual(Auth.api_key, authMethod(.sonarr));
+    try std.testing.expectEqual(Auth.api_key, authMethod(.prowlarr));
+    try std.testing.expectEqual(Auth.emby_token, authMethod(.jellyfin));
+    try std.testing.expectEqual(Auth.bearer, authMethod(.home_assistant));
+    try std.testing.expectEqual(Auth.basic, authMethod(.calibre));
+    try std.testing.expectEqual(Auth.basic_optional, authMethod(.adguard));
+    try std.testing.expectEqual(Auth.subsonic, authMethod(.navidrome));
+    try std.testing.expectEqual(Auth.session_cookie, authMethod(.vaultwarden));
+    try std.testing.expectEqual(Auth.none, authMethod(.mumble));
 }
 
 test "requiresCredential is false only for unauthenticated summary endpoints" {
@@ -748,6 +831,7 @@ test "requiresCredential is false only for unauthenticated summary endpoints" {
     try std.testing.expect(!requiresCredential(.valheim));
     try std.testing.expect(!requiresCredential(.skaldi));
     try std.testing.expect(!requiresCredential(.tome));
+    try std.testing.expect(!requiresCredential(.mumble));
     try std.testing.expect(requiresCredential(.calibre));
     try std.testing.expect(requiresCredential(.navidrome));
     try std.testing.expect(requiresCredential(.lidarr));
@@ -790,6 +874,38 @@ test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/rest/getScanStatus.view", systemStatusPath(.navidrome).?);
     try std.testing.expectEqualStrings("/health", systemStatusPath(.skaldi).?);
     try std.testing.expectEqualStrings("/api/stats/overview", systemStatusPath(.tome).?);
+    try std.testing.expect(systemStatusPath(.mumble) == null);
+}
+
+test "udpEndpoint parses udp urls and rejects malformed endpoints" {
+    const endpoint = try udpEndpoint("udp://127.0.0.1:64738");
+    try std.testing.expectEqualStrings("127.0.0.1", endpoint.host);
+    try std.testing.expectEqual(@as(u16, 64738), endpoint.port);
+
+    try std.testing.expectError(error.InvalidEndpoint, udpEndpoint("http://127.0.0.1:64738"));
+    try std.testing.expectError(error.InvalidEndpoint, udpEndpoint("udp://127.0.0.1"));
+    try std.testing.expectError(error.InvalidEndpoint, udpEndpoint("udp://:64738"));
+    try std.testing.expectError(error.InvalidEndpoint, udpEndpoint("udp://127.0.0.1:0"));
+    try std.testing.expectError(error.InvalidEndpoint, udpEndpoint("udp://127.0.0.1:notaport"));
+}
+
+test "mumble ping round-trips ident and parses user counts" {
+    const request = mumblePingRequest(0x0102030405060708);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8 }, &request);
+
+    var reply: [24]u8 = undefined;
+    std.mem.writeInt(u32, reply[0..4], 0x00010500, .big);
+    std.mem.writeInt(u64, reply[4..12], 0x0102030405060708, .big);
+    std.mem.writeInt(u32, reply[12..16], 2, .big);
+    std.mem.writeInt(u32, reply[16..20], 100, .big);
+    std.mem.writeInt(u32, reply[20..24], 72000, .big);
+
+    const item = try parseMumblePing(&reply, 0x0102030405060708);
+    try std.testing.expectEqual(@as(u32, 2), item.users);
+    try std.testing.expectEqual(@as(u32, 100), item.max_users);
+
+    try std.testing.expectError(error.SummaryUnavailable, parseMumblePing(reply[0..12], 0x0102030405060708));
+    try std.testing.expectError(error.SummaryUnavailable, parseMumblePing(&reply, 0x0807060504030201));
 }
 
 test "credential helpers trim files and reject header-breaking content" {
@@ -1288,4 +1404,12 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .tome = .{ .currently_reading = 2, .books_read_this_year = 12 } }).write(&aw.writer);
     try std.testing.expectEqualStrings("2 reading 12 yr", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .mumble = .{ .users = 2, .max_users = 100 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("2/100 online", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .mumble = .{ .users = 0, .max_users = 0 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("0 online", aw.written());
 }

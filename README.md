@@ -65,6 +65,7 @@ nix fmt
 | `services[].name`        | required            | display label             |
 | `services[].url`         | required            | link target               |
 | `services[].check`       | `url`               | reachability probe target |
+| `services[].api`         | `url`               | summary request base      |
 | `services[].kind`        | none                | summary adapter           |
 | `services[].credential`  | none                | systemd credential name   |
 | `services[].entity`      | none                | Home Assistant entity id  |
@@ -93,6 +94,7 @@ nix fmt
 | `calibre`        | `username:password`          | book count               |
 | `navidrome`      | `username:password`          | song count               |
 | `tome`           | none                         | reading, books this year |
+| `mumble`         | none                         | connected users          |
 
 ## Credentials
 

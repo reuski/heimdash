@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const http = std.http;
+const net = std.Io.net;
 
 const credential = @import("credential.zig");
 const render = @import("render.zig");
@@ -64,7 +65,39 @@ fn collectOne(
 }
 
 fn probeService(gpa: std.mem.Allocator, io: Io, svc: Service) render.ServiceReachability {
+    if (serviceAdapter(svc) == .mumble)
+        return within(io, probe_timeout_seconds, probeMumble, .{ io, svc.check orelse svc.api orelse svc.url }) orelse .down;
     return within(io, probe_timeout_seconds, probeUrl, .{ gpa, io, svc.check orelse svc.url }) orelse .down;
+}
+
+fn serviceAdapter(svc: Service) ?summary.Adapter {
+    return summary.adapterForKind(svc.kind orelse return null);
+}
+
+fn probeMumble(io: Io, endpoint_url: []const u8) render.ServiceReachability {
+    _ = mumblePing(io, endpoint_url) catch return .down;
+    return .up;
+}
+
+fn mumblePing(io: Io, endpoint_url: []const u8) !summary.Mumble {
+    const endpoint = try summary.udpEndpoint(endpoint_url);
+    const address = try net.IpAddress.resolve(io, endpoint.host, endpoint.port);
+    const bind_address: net.IpAddress = switch (address) {
+        .ip4 => .{ .ip4 = .unspecified(0) },
+        .ip6 => .{ .ip6 = .unspecified(0) },
+    };
+    const socket = try bind_address.bind(io, .{ .mode = .dgram });
+    defer socket.close(io);
+
+    var ident_bytes: [8]u8 = undefined;
+    io.random(&ident_bytes);
+    const ident = std.mem.readInt(u64, &ident_bytes, .big);
+    const request = summary.mumblePingRequest(ident);
+    try socket.send(io, &address, &request);
+
+    var buffer: [64]u8 = undefined;
+    const message = try socket.receive(io, &buffer);
+    return summary.parseMumblePing(message.data, ident);
 }
 
 fn probeUrl(gpa: std.mem.Allocator, io: Io, url: []const u8) render.ServiceReachability {
@@ -118,90 +151,118 @@ fn summaryText(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter
     return .{ .text = aw.written() };
 }
 
+const RequestAuth = struct {
+    authorization: ?[]u8 = null,
+    cookie: ?[]u8 = null,
+    header_buf: [1]http.Header = undefined,
+    header_count: usize = 0,
+
+    fn init(
+        gpa: std.mem.Allocator,
+        client: *http.Client,
+        base_url: []const u8,
+        adapter: summary.Adapter,
+        credential_value: ?[]const u8,
+    ) !RequestAuth {
+        switch (summary.authMethod(adapter)) {
+            .none, .subsonic => return .{},
+            .api_key => return withHeader("X-Api-Key", credential_value orelse return error.SummaryUnavailable),
+            .emby_token => return withHeader("X-Emby-Token", credential_value orelse return error.SummaryUnavailable),
+            .bearer => return .{
+                .authorization = try summary.bearerAuthorizationValue(gpa, credential_value orelse return error.SummaryUnavailable),
+            },
+            .basic => return .{
+                .authorization = try summary.basicAuthorizationValue(gpa, credential_value orelse return error.SummaryUnavailable),
+            },
+            .basic_optional => {
+                const cred = credential_value orelse return .{};
+                return .{ .authorization = try summary.basicAuthorizationValue(gpa, cred) };
+            },
+            .session_cookie => {
+                const cred = credential_value orelse return error.SummaryUnavailable;
+                const cookie = try fetchVaultwardenCookie(client, gpa, base_url, cred);
+                var auth = withHeader("Cookie", cookie);
+                auth.cookie = cookie;
+                return auth;
+            },
+        }
+    }
+
+    fn withHeader(name: []const u8, value: []const u8) RequestAuth {
+        var auth: RequestAuth = .{ .header_count = 1 };
+        auth.header_buf[0] = .{ .name = name, .value = value };
+        return auth;
+    }
+
+    fn headers(auth: *const RequestAuth) []const http.Header {
+        return auth.header_buf[0..auth.header_count];
+    }
+
+    fn deinit(auth: *RequestAuth, gpa: std.mem.Allocator) void {
+        for ([_]?[]u8{ auth.authorization, auth.cookie }) |secret| if (secret) |value| {
+            @memset(value, 0);
+            gpa.free(value);
+        };
+    }
+};
+
 fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: ?[]const u8, entity: ?[]const u8) !summary.Value {
+    if (adapter == .mumble) return .{ .mumble = try mumblePing(io, base_url) };
+
     var client: http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
 
+    var auth: RequestAuth = try .init(gpa, &client, base_url, adapter, credential_value);
+    defer auth.deinit(gpa);
+
     switch (adapter) {
         .sonarr, .radarr, .lidarr => {
-            const cred = credential_value orelse return error.SummaryUnavailable;
-            const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = cred }};
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &headers, null);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(status_json);
-            const queue_json = try fetchSummaryBody(&client, gpa, base_url, summary.arrQueueStatusPath(adapter).?, &headers, null);
+            const queue_json = try fetchSummaryBody(&client, gpa, base_url, summary.arrQueueStatusPath(adapter).?, &auth);
             defer gpa.free(queue_json);
             return .{ .arr = try summary.parseArr(parse_arena, status_json, queue_json) };
         },
         .prowlarr => {
-            const cred = credential_value orelse return error.SummaryUnavailable;
-            const headers = [_]http.Header{.{ .name = "X-Api-Key", .value = cred }};
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &headers, null);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(status_json);
-            const health_json = try fetchSummaryBody(&client, gpa, base_url, summary.prowlarrHealthPath(), &headers, null);
+            const health_json = try fetchSummaryBody(&client, gpa, base_url, summary.prowlarrHealthPath(), &auth);
             defer gpa.free(health_json);
-            const indexer_json = try fetchSummaryBody(&client, gpa, base_url, summary.prowlarrIndexerPath(), &headers, null);
+            const indexer_json = try fetchSummaryBody(&client, gpa, base_url, summary.prowlarrIndexerPath(), &auth);
             defer gpa.free(indexer_json);
             return .{ .prowlarr = try summary.parseProwlarr(parse_arena, status_json, health_json, indexer_json) };
         },
         .jellyfin => {
-            const cred = credential_value orelse return error.SummaryUnavailable;
-            const headers = [_]http.Header{.{ .name = "X-Emby-Token", .value = cred }};
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &headers, null);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(status_json);
-            const counts_json = try fetchSummaryBody(&client, gpa, base_url, summary.jellyfinItemCountsPath(), &headers, null);
+            const counts_json = try fetchSummaryBody(&client, gpa, base_url, summary.jellyfinItemCountsPath(), &auth);
             defer gpa.free(counts_json);
             return .{ .jellyfin = try summary.parseJellyfin(parse_arena, status_json, counts_json) };
         },
         .adguard => {
-            const authorization: ?[]u8 = if (credential_value) |cred|
-                try summary.basicAuthorizationValue(gpa, cred)
-            else
-                null;
-            defer if (authorization) |value| {
-                @memset(value, 0);
-                gpa.free(value);
-            };
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(status_json);
-            const stats_json = try fetchSummaryBody(&client, gpa, base_url, summary.adguardStatsPath(), &.{}, authorization);
+            const stats_json = try fetchSummaryBody(&client, gpa, base_url, summary.adguardStatsPath(), &auth);
             defer gpa.free(stats_json);
             return .{ .adguard = try summary.parseAdGuard(parse_arena, status_json, stats_json) };
         },
         .qbittorrent => {
-            const cred = credential_value orelse return error.SummaryUnavailable;
-            const authorization = try summary.bearerAuthorizationValue(gpa, cred);
-            defer {
-                @memset(authorization, 0);
-                gpa.free(authorization);
-            }
-            const version_text = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
+            const version_text = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(version_text);
-            const transfer_json = try fetchSummaryBody(&client, gpa, base_url, summary.qbittorrentTransferPath(), &.{}, authorization);
+            const transfer_json = try fetchSummaryBody(&client, gpa, base_url, summary.qbittorrentTransferPath(), &auth);
             defer gpa.free(transfer_json);
             return .{ .qbittorrent = try summary.parseQbittorrent(parse_arena, version_text, transfer_json) };
         },
         .home_assistant => {
-            const cred = credential_value orelse return error.SummaryUnavailable;
             const entity_id = entity orelse return error.SummaryUnavailable;
-            const authorization = try summary.bearerAuthorizationValue(gpa, cred);
-            defer {
-                @memset(authorization, 0);
-                gpa.free(authorization);
-            }
             const entity_path = try summary.homeAssistantStatePath(gpa, entity_id);
             defer gpa.free(entity_path);
-            const entity_json = try fetchSummaryBody(&client, gpa, base_url, entity_path, &.{}, authorization);
+            const entity_json = try fetchSummaryBody(&client, gpa, base_url, entity_path, &auth);
             defer gpa.free(entity_json);
             return .{ .home_assistant = try summary.parseHomeAssistant(parse_arena, entity_json) };
         },
         .audiobookshelf => {
-            const cred = credential_value orelse return error.SummaryUnavailable;
-            const authorization = try summary.bearerAuthorizationValue(gpa, cred);
-            defer {
-                @memset(authorization, 0);
-                gpa.free(authorization);
-            }
-            const libraries_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
+            const libraries_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(libraries_json);
             const library_ids = try summary.parseAudiobookshelfBookLibraries(parse_arena, libraries_json);
 
@@ -210,7 +271,7 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             for (library_ids) |library_id| {
                 const stats_path = try summary.audiobookshelfStatsPath(gpa, library_id);
                 defer gpa.free(stats_path);
-                const stats_json = try fetchSummaryBody(&client, gpa, base_url, stats_path, &.{}, authorization);
+                const stats_json = try fetchSummaryBody(&client, gpa, base_url, stats_path, &auth);
                 defer gpa.free(stats_json);
                 const stats = try summary.parseAudiobookshelfStats(parse_arena, stats_json);
                 book_count += stats.items;
@@ -219,35 +280,22 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             return .{ .audiobookshelf = .{ .book_count = book_count, .duration_seconds = duration_seconds } };
         },
         .vaultwarden => {
-            const cred = credential_value orelse return error.SummaryUnavailable;
-            const cookie = try fetchVaultwardenCookie(&client, gpa, base_url, cred);
-            defer {
-                @memset(cookie, 0);
-                gpa.free(cookie);
-            }
-            const headers = [_]http.Header{.{ .name = "Cookie", .value = cookie }};
-            const users_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &headers, null);
+            const users_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(users_json);
             return .{ .vaultwarden = try summary.parseVaultwarden(parse_arena, users_json) };
         },
         .maintainerr => {
-            const metrics_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, null);
+            const metrics_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(metrics_json);
             return .{ .maintainerr = try summary.parseMaintainerr(parse_arena, metrics_json) };
         },
         .valheim => {
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, null);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(status_json);
             return .{ .valheim = try summary.parseValheim(parse_arena, status_json) };
         },
         .calibre => {
-            const cred = credential_value orelse return error.SummaryUnavailable;
-            const authorization = try summary.basicAuthorizationValue(gpa, cred);
-            defer {
-                @memset(authorization, 0);
-                gpa.free(authorization);
-            }
-            const feed_xml = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, authorization);
+            const feed_xml = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(feed_xml);
             return .{ .calibre = try summary.parseCalibre(feed_xml) };
         },
@@ -260,24 +308,25 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             defer gpa.free(query);
             const path = try std.fmt.allocPrint(gpa, "{s}?{s}", .{ summary.systemStatusPath(adapter).?, query });
             defer gpa.free(path);
-            const status_json = try fetchSummaryBody(&client, gpa, base_url, path, &.{}, null);
+            const status_json = try fetchSummaryBody(&client, gpa, base_url, path, &auth);
             defer gpa.free(status_json);
             return .{ .navidrome = try summary.parseNavidrome(parse_arena, status_json) };
         },
         .skaldi => {
-            const health_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, null);
+            const health_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(health_json);
             return .{ .skaldi = try summary.parseSkaldi(parse_arena, health_json) };
         },
         .tome => {
-            const overview_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &.{}, null);
+            const overview_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(overview_json);
             return .{ .tome = try summary.parseTome(parse_arena, overview_json) };
         },
+        .mumble => unreachable,
     }
 }
 
-fn fetchSummaryBody(client: *http.Client, gpa: std.mem.Allocator, base_url: []const u8, path: []const u8, headers: []const http.Header, authorization: ?[]const u8) ![]u8 {
+fn fetchSummaryBody(client: *http.Client, gpa: std.mem.Allocator, base_url: []const u8, path: []const u8, auth: *const RequestAuth) ![]u8 {
     const url = try endpointUrl(gpa, base_url, path);
     defer gpa.free(url);
 
@@ -290,8 +339,8 @@ fn fetchSummaryBody(client: *http.Client, gpa: std.mem.Allocator, base_url: []co
         .response_writer = &aw.writer,
         .redirect_behavior = .unhandled,
         .keep_alive = true,
-        .headers = .{ .authorization = if (authorization) |value| .{ .override = value } else .default },
-        .extra_headers = headers,
+        .headers = .{ .authorization = if (auth.authorization) |value| .{ .override = value } else .default },
+        .extra_headers = auth.headers(),
     });
 
     if (!summary.isAvailableHttpStatus(result.status)) return error.SummaryUnavailable;
