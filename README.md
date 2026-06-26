@@ -69,6 +69,7 @@ nix fmt
 | `services[].kind`        | none                | summary adapter           |
 | `services[].credential`  | none                | systemd credential name   |
 | `services[].entity`      | none                | Home Assistant entity id  |
+| `services[].stamp`       | none                | Unix-timestamp stamp file |
 | `thresholds.cpu`         | `75/90`             | percent                   |
 | `thresholds.memory`      | `80/90`             | percent                   |
 | `thresholds.disk`        | `80/90`             | percent                   |
@@ -95,6 +96,7 @@ nix fmt
 | `navidrome`      | `username:password`          | song count               |
 | `tome`           | none                         | reading, books this year |
 | `mumble`         | none                         | connected users          |
+| `attic`          | none                         | last-primed age (stamp)  |
 
 ## Credentials
 

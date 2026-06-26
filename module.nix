@@ -146,6 +146,11 @@ in
               default = null;
               description = "Optional Home Assistant entity id for the read-only summary line.";
             };
+            stamp = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Optional path to a Unix-timestamp stamp file driving the read-only summary line (e.g. an Attic cache last-primed marker).";
+            };
           };
         }
       );
@@ -279,6 +284,10 @@ in
       {
         assertion = lib.all serviceEntityIsSet cfg.services;
         message = "services.heimdash.services entries with entity set must use a non-empty entity id.";
+      }
+      {
+        assertion = lib.all (service: service.stamp == null || service.stamp != "") cfg.services;
+        message = "services.heimdash.services entries with stamp set must use a non-empty stamp path.";
       }
       {
         assertion = networkInterfaceIsSet;

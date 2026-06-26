@@ -21,6 +21,7 @@ pub const Adapter = enum {
     skaldi,
     tome,
     mumble,
+    attic,
 };
 
 pub const Auth = enum {
@@ -36,7 +37,7 @@ pub const Auth = enum {
 
 pub fn authMethod(adapter: Adapter) Auth {
     return switch (adapter) {
-        .maintainerr, .valheim, .skaldi, .tome, .mumble => .none,
+        .maintainerr, .valheim, .skaldi, .tome, .mumble, .attic => .none,
         .sonarr, .radarr, .lidarr, .prowlarr => .api_key,
         .jellyfin => .emby_token,
         .qbittorrent, .home_assistant, .audiobookshelf => .bearer,
@@ -142,6 +143,10 @@ pub const Mumble = struct {
     max_users: u32,
 };
 
+pub const Attic = struct {
+    primed_age_seconds: u64,
+};
+
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -163,6 +168,7 @@ pub const Value = union(enum) {
     skaldi: Skaldi,
     tome: Tome,
     mumble: Mumble,
+    attic: Attic,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -217,6 +223,7 @@ pub const Value = union(enum) {
             } else {
                 try w.print("{d} online", .{item.users});
             },
+            .attic => |item| try writeAtticAge(w, item.primed_age_seconds),
         }
     }
 };
@@ -365,6 +372,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "skaldi")) return .skaldi;
     if (std.ascii.eqlIgnoreCase(kind, "tome")) return .tome;
     if (std.ascii.eqlIgnoreCase(kind, "mumble")) return .mumble;
+    if (std.ascii.eqlIgnoreCase(kind, "attic")) return .attic;
     return null;
 }
 
@@ -386,6 +394,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .skaldi => "/health",
         .tome => "/api/stats/overview",
         .mumble => null,
+        .attic => null,
     };
 }
 
@@ -762,6 +771,24 @@ pub fn parseTome(allocator: std.mem.Allocator, overview_json: []const u8) !Tome 
     };
 }
 
+pub fn parseStampSeconds(text: []const u8) ?u64 {
+    const value = std.mem.trim(u8, text, " \t\r\n");
+    if (value.len == 0) return null;
+    return std.fmt.parseInt(u64, value, 10) catch null;
+}
+
+fn writeAtticAge(w: *Io.Writer, age_seconds: u64) !void {
+    if (age_seconds < 60) {
+        try w.writeAll("primed just now");
+    } else if (age_seconds < 3600) {
+        try w.print("primed {d}m ago", .{age_seconds / 60});
+    } else if (age_seconds < 86400) {
+        try w.print("primed {d}h ago", .{age_seconds / 3600});
+    } else {
+        try w.print("primed {d}d ago", .{age_seconds / 86400});
+    }
+}
+
 fn writeFormValue(w: *Io.Writer, value: []const u8) !void {
     for (value) |c| {
         if (c == ' ') {
@@ -810,6 +837,7 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.skaldi, adapterForKind("Skaldi").?);
     try std.testing.expectEqual(Adapter.tome, adapterForKind("Tome").?);
     try std.testing.expectEqual(Adapter.mumble, adapterForKind("Mumble").?);
+    try std.testing.expectEqual(Adapter.attic, adapterForKind("Attic").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
@@ -823,6 +851,7 @@ test "authMethod maps each adapter to its credential mechanism" {
     try std.testing.expectEqual(Auth.subsonic, authMethod(.navidrome));
     try std.testing.expectEqual(Auth.session_cookie, authMethod(.vaultwarden));
     try std.testing.expectEqual(Auth.none, authMethod(.mumble));
+    try std.testing.expectEqual(Auth.none, authMethod(.attic));
 }
 
 test "requiresCredential is false only for unauthenticated summary endpoints" {
@@ -832,6 +861,7 @@ test "requiresCredential is false only for unauthenticated summary endpoints" {
     try std.testing.expect(!requiresCredential(.skaldi));
     try std.testing.expect(!requiresCredential(.tome));
     try std.testing.expect(!requiresCredential(.mumble));
+    try std.testing.expect(!requiresCredential(.attic));
     try std.testing.expect(requiresCredential(.calibre));
     try std.testing.expect(requiresCredential(.navidrome));
     try std.testing.expect(requiresCredential(.lidarr));
@@ -875,6 +905,7 @@ test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/health", systemStatusPath(.skaldi).?);
     try std.testing.expectEqualStrings("/api/stats/overview", systemStatusPath(.tome).?);
     try std.testing.expect(systemStatusPath(.mumble) == null);
+    try std.testing.expect(systemStatusPath(.attic) == null);
 }
 
 test "udpEndpoint parses udp urls and rejects malformed endpoints" {
@@ -1311,6 +1342,13 @@ test "parseTome reads currently reading and books read this year" {
     } else |_| {}
 }
 
+test "parseStampSeconds trims and parses unix seconds" {
+    try std.testing.expectEqual(@as(?u64, 1719421200), parseStampSeconds("1719421200\n"));
+    try std.testing.expectEqual(@as(?u64, 0), parseStampSeconds(" 0 "));
+    try std.testing.expectEqual(@as(?u64, null), parseStampSeconds("\n"));
+    try std.testing.expectEqual(@as(?u64, null), parseStampSeconds("not-a-number"));
+}
+
 test "Value writes compact summary lines" {
     var aw: Io.Writer.Allocating = .init(std.testing.allocator);
     defer aw.deinit();
@@ -1412,4 +1450,20 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .mumble = .{ .users = 0, .max_users = 0 } }).write(&aw.writer);
     try std.testing.expectEqualStrings("0 online", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .attic = .{ .primed_age_seconds = 30 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("primed just now", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .attic = .{ .primed_age_seconds = 1800 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("primed 30m ago", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .attic = .{ .primed_age_seconds = 7200 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("primed 2h ago", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .attic = .{ .primed_age_seconds = 172_800 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("primed 2d ago", aw.written());
 }

@@ -18,6 +18,7 @@ pub const Service = struct {
     kind: ?[]const u8 = null,
     credential: ?[]const u8 = null,
     entity: ?[]const u8 = null,
+    stamp: ?[]const u8 = null,
 };
 
 pub fn cards(arena: std.mem.Allocator, services: []const Service) ![]const render.ServiceCard {
@@ -100,6 +101,17 @@ fn mumblePing(io: Io, endpoint_url: []const u8) !summary.Mumble {
     return summary.parseMumblePing(message.data, ident);
 }
 
+fn atticValue(io: Io, stamp_path: []const u8) !summary.Attic {
+    var file = try Io.Dir.openFileAbsolute(io, stamp_path, .{});
+    defer file.close(io);
+    var fr = file.reader(io, &.{});
+    var buf: [32]u8 = undefined;
+    const n = try fr.interface.readSliceShort(&buf);
+    const primed = summary.parseStampSeconds(buf[0..n]) orelse return error.SummaryUnavailable;
+    const now: u64 = @intCast(@max(Io.Timestamp.now(io, .real).toSeconds(), 0));
+    return .{ .primed_age_seconds = if (now > primed) now - primed else 0 };
+}
+
 fn probeUrl(gpa: std.mem.Allocator, io: Io, url: []const u8) render.ServiceReachability {
     var client: http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
@@ -127,12 +139,13 @@ fn isReachableStatus(status: http.Status) bool {
 fn serviceSummary(arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, credentials_directory: ?[]const u8, svc: Service) render.ServiceSummary {
     const adapter = summary.adapterForKind(svc.kind orelse return .{}) orelse return .{};
     if (adapter == .home_assistant and svc.entity == null) return .{};
+    if (adapter == .attic and svc.stamp == null) return .{};
     const credential_value: ?[]const u8 = if (svc.credential) |name| value: {
         const credential_bytes = readCredentialBytes(arena, io, credentials_directory, name) catch return .{};
         break :value summary.credentialHeaderValue(credential_bytes) orelse return .{};
     } else null;
     if (summary.requiresCredential(adapter) and credential_value == null) return .{};
-    return within(io, summary_timeout_seconds, summaryText, .{ arena, gpa, io, adapter, svc.api orelse svc.url, credential_value, svc.entity }) orelse .{};
+    return within(io, summary_timeout_seconds, summaryText, .{ arena, gpa, io, adapter, svc.api orelse svc.url, credential_value, svc.entity, svc.stamp }) orelse .{};
 }
 
 fn readCredentialBytes(arena: std.mem.Allocator, io: Io, credentials_directory: ?[]const u8, name: []const u8) ![]const u8 {
@@ -141,11 +154,11 @@ fn readCredentialBytes(arena: std.mem.Allocator, io: Io, credentials_directory: 
     return Io.Dir.cwd().readFileAlloc(io, credential_path, arena, .limited(64 * 1024)) catch return error.CredentialUnavailable;
 }
 
-fn summaryText(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: ?[]const u8, entity: ?[]const u8) render.ServiceSummary {
+fn summaryText(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: ?[]const u8, entity: ?[]const u8, stamp: ?[]const u8) render.ServiceSummary {
     var parse_arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer parse_arena_state.deinit();
 
-    const value = fetchSummaryValue(gpa, parse_arena_state.allocator(), io, adapter, base_url, credential_value, entity) catch return .{};
+    const value = fetchSummaryValue(gpa, parse_arena_state.allocator(), io, adapter, base_url, credential_value, entity, stamp) catch return .{};
     var aw: Io.Writer.Allocating = .init(arena);
     value.write(&aw.writer) catch return .{};
     return .{ .text = aw.written() };
@@ -206,8 +219,12 @@ const RequestAuth = struct {
     }
 };
 
-fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: ?[]const u8, entity: ?[]const u8) !summary.Value {
+fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io: Io, adapter: summary.Adapter, base_url: []const u8, credential_value: ?[]const u8, entity: ?[]const u8, stamp: ?[]const u8) !summary.Value {
     if (adapter == .mumble) return .{ .mumble = try mumblePing(io, base_url) };
+    if (adapter == .attic) {
+        const stamp_path = stamp orelse return error.SummaryUnavailable;
+        return .{ .attic = try atticValue(io, stamp_path) };
+    }
 
     var client: http.Client = .{ .allocator = gpa, .io = io };
     defer client.deinit();
@@ -323,6 +340,7 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             return .{ .tome = try summary.parseTome(parse_arena, overview_json) };
         },
         .mumble => unreachable,
+        .attic => unreachable,
     }
 }
 
