@@ -339,6 +339,12 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             defer gpa.free(overview_json);
             return .{ .tome = try summary.parseTome(parse_arena, overview_json) };
         },
+        .ntfy => {
+            const body = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
+            defer gpa.free(body);
+            const now: i64 = @max(Io.Timestamp.now(io, .real).toSeconds(), 0);
+            return .{ .ntfy = try summary.parseNtfy(parse_arena, body, now) };
+        },
         .mumble => unreachable,
         .attic => unreachable,
     }

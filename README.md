@@ -97,6 +97,7 @@ nix fmt
 | `tome`           | none                         | reading, books this year |
 | `mumble`         | none                         | connected users          |
 | `attic`          | none                         | last-primed age (stamp)  |
+| `ntfy`           | none                         | last update status, age  |
 
 ## Credentials
 

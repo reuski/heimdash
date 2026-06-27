@@ -22,6 +22,7 @@ pub const Adapter = enum {
     tome,
     mumble,
     attic,
+    ntfy,
 };
 
 pub const Auth = enum {
@@ -37,7 +38,7 @@ pub const Auth = enum {
 
 pub fn authMethod(adapter: Adapter) Auth {
     return switch (adapter) {
-        .maintainerr, .valheim, .skaldi, .tome, .mumble, .attic => .none,
+        .maintainerr, .valheim, .skaldi, .tome, .mumble, .attic, .ntfy => .none,
         .sonarr, .radarr, .lidarr, .prowlarr => .api_key,
         .jellyfin => .emby_token,
         .qbittorrent, .home_assistant, .audiobookshelf => .bearer,
@@ -147,6 +148,11 @@ pub const Attic = struct {
     primed_age_seconds: u64,
 };
 
+pub const Ntfy = struct {
+    ok: bool,
+    age_seconds: u64,
+};
+
 pub const UserPassword = struct {
     username: []const u8,
     password: []const u8,
@@ -169,6 +175,7 @@ pub const Value = union(enum) {
     tome: Tome,
     mumble: Mumble,
     attic: Attic,
+    ntfy: Ntfy,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
         switch (value) {
@@ -224,6 +231,10 @@ pub const Value = union(enum) {
                 try w.print("{d} online", .{item.users});
             },
             .attic => |item| try writeAtticAge(w, item.primed_age_seconds),
+            .ntfy => |item| {
+                try w.writeAll(if (item.ok) "nominal" else "fault");
+                try writeAgeAgo(w, item.age_seconds);
+            },
         }
     }
 };
@@ -354,6 +365,12 @@ const TomeOverviewJson = struct {
     booksRead: TomeBooksReadJson = .{},
 };
 
+const NtfyMessageJson = struct {
+    event: []const u8 = "",
+    time: i64 = 0,
+    priority: u8 = 3,
+};
+
 pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "sonarr")) return .sonarr;
     if (std.ascii.eqlIgnoreCase(kind, "radarr")) return .radarr;
@@ -373,6 +390,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "tome")) return .tome;
     if (std.ascii.eqlIgnoreCase(kind, "mumble")) return .mumble;
     if (std.ascii.eqlIgnoreCase(kind, "attic")) return .attic;
+    if (std.ascii.eqlIgnoreCase(kind, "ntfy")) return .ntfy;
     return null;
 }
 
@@ -395,6 +413,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .tome => "/api/stats/overview",
         .mumble => null,
         .attic => null,
+        .ntfy => "/json?poll=1",
     };
 }
 
@@ -771,6 +790,30 @@ pub fn parseTome(allocator: std.mem.Allocator, overview_json: []const u8) !Tome 
     };
 }
 
+pub fn parseNtfy(allocator: std.mem.Allocator, body: []const u8, now_seconds: i64) !Ntfy {
+    var found = false;
+    var last_time: i64 = 0;
+    var ok = true;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        const message = std.json.parseFromSliceLeaky(NtfyMessageJson, allocator, line, .{
+            .ignore_unknown_fields = true,
+        }) catch continue;
+        if (!std.mem.eql(u8, message.event, "message")) continue;
+        found = true;
+        last_time = message.time;
+        ok = message.priority < 4;
+    }
+    if (!found) return error.SummaryUnavailable;
+    const age: u64 = if (last_time > 0 and now_seconds > last_time)
+        @intCast(now_seconds - last_time)
+    else
+        0;
+    return .{ .ok = ok, .age_seconds = age };
+}
+
 pub fn parseStampSeconds(text: []const u8) ?u64 {
     const value = std.mem.trim(u8, text, " \t\r\n");
     if (value.len == 0) return null;
@@ -786,6 +829,18 @@ fn writeAtticAge(w: *Io.Writer, age_seconds: u64) !void {
         try w.print("primed {d}h ago", .{age_seconds / 3600});
     } else {
         try w.print("primed {d}d ago", .{age_seconds / 86400});
+    }
+}
+
+fn writeAgeAgo(w: *Io.Writer, age_seconds: u64) !void {
+    if (age_seconds < 60) {
+        try w.writeAll(" just now");
+    } else if (age_seconds < 3600) {
+        try w.print(" {d}m ago", .{age_seconds / 60});
+    } else if (age_seconds < 86400) {
+        try w.print(" {d}h ago", .{age_seconds / 3600});
+    } else {
+        try w.print(" {d}d ago", .{age_seconds / 86400});
     }
 }
 
@@ -838,7 +893,26 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.tome, adapterForKind("Tome").?);
     try std.testing.expectEqual(Adapter.mumble, adapterForKind("Mumble").?);
     try std.testing.expectEqual(Adapter.attic, adapterForKind("Attic").?);
+    try std.testing.expectEqual(Adapter.ntfy, adapterForKind("ntfy").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
+}
+
+test "parseNtfy reads the latest digest status and age" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\{"id":"a","time":1000,"event":"message","topic":"fleet","title":"FLEET SYNC :: NOMINAL","priority":3}
+        \\{"id":"b","time":2000,"event":"message","topic":"fleet","title":"FLEET SYNC :: FAULT","priority":4}
+    ;
+    const value = try parseNtfy(arena.allocator(), body, 2000 + 7200);
+    try std.testing.expect(!value.ok);
+    try std.testing.expectEqual(@as(u64, 7200), value.age_seconds);
+}
+
+test "parseNtfy without messages is unavailable" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.SummaryUnavailable, parseNtfy(arena.allocator(), "", 1000));
 }
 
 test "authMethod maps each adapter to its credential mechanism" {
@@ -862,6 +936,7 @@ test "requiresCredential is false only for unauthenticated summary endpoints" {
     try std.testing.expect(!requiresCredential(.tome));
     try std.testing.expect(!requiresCredential(.mumble));
     try std.testing.expect(!requiresCredential(.attic));
+    try std.testing.expect(!requiresCredential(.ntfy));
     try std.testing.expect(requiresCredential(.calibre));
     try std.testing.expect(requiresCredential(.navidrome));
     try std.testing.expect(requiresCredential(.lidarr));
