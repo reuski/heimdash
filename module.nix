@@ -149,7 +149,7 @@ in
             stamp = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
-              description = "Optional path to a Unix-timestamp stamp file driving the read-only summary line (e.g. an Attic cache last-primed marker).";
+              description = "Optional path to a Unix-timestamp stamp file driving the read-only summary line and reachability.";
             };
           };
         }

@@ -66,9 +66,16 @@ fn collectOne(
 }
 
 fn probeService(gpa: std.mem.Allocator, io: Io, svc: Service) render.ServiceReachability {
+    if (serviceAdapter(svc) == .backup) return probeBackup(io, svc.stamp);
     if (serviceAdapter(svc) == .mumble)
         return within(io, probe_timeout_seconds, probeMumble, .{ io, svc.check orelse svc.api orelse svc.url }) orelse .down;
     return within(io, probe_timeout_seconds, probeUrl, .{ gpa, io, svc.check orelse svc.url }) orelse .down;
+}
+
+fn probeBackup(io: Io, stamp: ?[]const u8) render.ServiceReachability {
+    const stamp_path = stamp orelse return .down;
+    const age = stampAgeSeconds(io, stamp_path) catch return .down;
+    return if (age <= summary.backup_stale_seconds) .up else .down;
 }
 
 fn serviceAdapter(svc: Service) ?summary.Adapter {
@@ -101,15 +108,23 @@ fn mumblePing(io: Io, endpoint_url: []const u8) !summary.Mumble {
     return summary.parseMumblePing(message.data, ident);
 }
 
-fn atticValue(io: Io, stamp_path: []const u8) !summary.Attic {
+fn stampAgeSeconds(io: Io, stamp_path: []const u8) !u64 {
     var file = try Io.Dir.openFileAbsolute(io, stamp_path, .{});
     defer file.close(io);
     var fr = file.reader(io, &.{});
     var buf: [32]u8 = undefined;
     const n = try fr.interface.readSliceShort(&buf);
-    const primed = summary.parseStampSeconds(buf[0..n]) orelse return error.SummaryUnavailable;
+    const stamped = summary.parseStampSeconds(buf[0..n]) orelse return error.SummaryUnavailable;
     const now: u64 = @intCast(@max(Io.Timestamp.now(io, .real).toSeconds(), 0));
-    return .{ .primed_age_seconds = if (now > primed) now - primed else 0 };
+    return if (now > stamped) now - stamped else 0;
+}
+
+fn atticValue(io: Io, stamp_path: []const u8) !summary.Attic {
+    return .{ .primed_age_seconds = try stampAgeSeconds(io, stamp_path) };
+}
+
+fn backupValue(io: Io, stamp_path: []const u8) !summary.Backup {
+    return .{ .age_seconds = try stampAgeSeconds(io, stamp_path) };
 }
 
 fn probeUrl(gpa: std.mem.Allocator, io: Io, url: []const u8) render.ServiceReachability {
@@ -139,7 +154,7 @@ fn isReachableStatus(status: http.Status) bool {
 fn serviceSummary(arena: std.mem.Allocator, io: Io, gpa: std.mem.Allocator, credentials_directory: ?[]const u8, svc: Service) render.ServiceSummary {
     const adapter = summary.adapterForKind(svc.kind orelse return .{}) orelse return .{};
     if (adapter == .home_assistant and svc.entity == null) return .{};
-    if (adapter == .attic and svc.stamp == null) return .{};
+    if ((adapter == .attic or adapter == .backup) and svc.stamp == null) return .{};
     const credential_value: ?[]const u8 = if (svc.credential) |name| value: {
         const credential_bytes = readCredentialBytes(arena, io, credentials_directory, name) catch return .{};
         break :value summary.credentialHeaderValue(credential_bytes) orelse return .{};
@@ -224,6 +239,10 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
     if (adapter == .attic) {
         const stamp_path = stamp orelse return error.SummaryUnavailable;
         return .{ .attic = try atticValue(io, stamp_path) };
+    }
+    if (adapter == .backup) {
+        const stamp_path = stamp orelse return error.SummaryUnavailable;
+        return .{ .backup = try backupValue(io, stamp_path) };
     }
 
     var client: http.Client = .{ .allocator = gpa, .io = io };
@@ -346,6 +365,7 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
         },
         .mumble => unreachable,
         .attic => unreachable,
+        .backup => unreachable,
     }
 }
 

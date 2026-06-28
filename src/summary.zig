@@ -22,6 +22,7 @@ pub const Adapter = enum {
     tome,
     mumble,
     attic,
+    backup,
     ntfy,
 };
 
@@ -38,7 +39,7 @@ pub const Auth = enum {
 
 pub fn authMethod(adapter: Adapter) Auth {
     return switch (adapter) {
-        .maintainerr, .valheim, .skaldi, .tome, .mumble, .attic, .ntfy => .none,
+        .maintainerr, .valheim, .skaldi, .tome, .mumble, .attic, .backup, .ntfy => .none,
         .sonarr, .radarr, .lidarr, .prowlarr => .api_key,
         .jellyfin => .emby_token,
         .qbittorrent, .home_assistant, .audiobookshelf => .bearer,
@@ -148,6 +149,12 @@ pub const Attic = struct {
     primed_age_seconds: u64,
 };
 
+pub const Backup = struct {
+    age_seconds: u64,
+};
+
+pub const backup_stale_seconds: u64 = 36 * 60 * 60;
+
 pub const Ntfy = struct {
     count: u64,
 };
@@ -174,6 +181,7 @@ pub const Value = union(enum) {
     tome: Tome,
     mumble: Mumble,
     attic: Attic,
+    backup: Backup,
     ntfy: Ntfy,
 
     pub fn write(value: Value, w: *Io.Writer) !void {
@@ -229,7 +237,8 @@ pub const Value = union(enum) {
             } else {
                 try w.print("{d} online", .{item.users});
             },
-            .attic => |item| try writeAtticAge(w, item.primed_age_seconds),
+            .attic => |item| try writeAge(w, "primed ", item.primed_age_seconds),
+            .backup => |item| try writeAge(w, "", item.age_seconds),
             .ntfy => |item| if (item.count == 0) {
                 try w.writeAll("idle");
             } else {
@@ -388,6 +397,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "tome")) return .tome;
     if (std.ascii.eqlIgnoreCase(kind, "mumble")) return .mumble;
     if (std.ascii.eqlIgnoreCase(kind, "attic")) return .attic;
+    if (std.ascii.eqlIgnoreCase(kind, "backup")) return .backup;
     if (std.ascii.eqlIgnoreCase(kind, "ntfy")) return .ntfy;
     return null;
 }
@@ -411,6 +421,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .tome => "/api/stats/overview",
         .mumble => null,
         .attic => null,
+        .backup => null,
         .ntfy => "/json?poll=1&since=24h",
     };
 }
@@ -809,15 +820,15 @@ pub fn parseStampSeconds(text: []const u8) ?u64 {
     return std.fmt.parseInt(u64, value, 10) catch null;
 }
 
-fn writeAtticAge(w: *Io.Writer, age_seconds: u64) !void {
+fn writeAge(w: *Io.Writer, prefix: []const u8, age_seconds: u64) !void {
     if (age_seconds < 60) {
-        try w.writeAll("primed just now");
+        try w.print("{s}just now", .{prefix});
     } else if (age_seconds < 3600) {
-        try w.print("primed {d}m ago", .{age_seconds / 60});
+        try w.print("{s}{d}m ago", .{ prefix, age_seconds / 60 });
     } else if (age_seconds < 86400) {
-        try w.print("primed {d}h ago", .{age_seconds / 3600});
+        try w.print("{s}{d}h ago", .{ prefix, age_seconds / 3600 });
     } else {
-        try w.print("primed {d}d ago", .{age_seconds / 86400});
+        try w.print("{s}{d}d ago", .{ prefix, age_seconds / 86400 });
     }
 }
 
@@ -870,8 +881,16 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expectEqual(Adapter.tome, adapterForKind("Tome").?);
     try std.testing.expectEqual(Adapter.mumble, adapterForKind("Mumble").?);
     try std.testing.expectEqual(Adapter.attic, adapterForKind("Attic").?);
+    try std.testing.expectEqual(Adapter.backup, adapterForKind("Backup").?);
     try std.testing.expectEqual(Adapter.ntfy, adapterForKind("ntfy").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
+}
+
+test "backup summary writes relative age without prefix" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try (Value{ .backup = .{ .age_seconds = 7200 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("2h ago", aw.written());
 }
 
 test "parseNtfy counts message events" {
@@ -902,6 +921,7 @@ test "authMethod maps each adapter to its credential mechanism" {
     try std.testing.expectEqual(Auth.session_cookie, authMethod(.vaultwarden));
     try std.testing.expectEqual(Auth.none, authMethod(.mumble));
     try std.testing.expectEqual(Auth.none, authMethod(.attic));
+    try std.testing.expectEqual(Auth.none, authMethod(.backup));
 }
 
 test "requiresCredential is false only for unauthenticated summary endpoints" {
@@ -912,6 +932,7 @@ test "requiresCredential is false only for unauthenticated summary endpoints" {
     try std.testing.expect(!requiresCredential(.tome));
     try std.testing.expect(!requiresCredential(.mumble));
     try std.testing.expect(!requiresCredential(.attic));
+    try std.testing.expect(!requiresCredential(.backup));
     try std.testing.expect(!requiresCredential(.ntfy));
     try std.testing.expect(requiresCredential(.calibre));
     try std.testing.expect(requiresCredential(.navidrome));
@@ -957,6 +978,7 @@ test "paths follow supported service APIs" {
     try std.testing.expectEqualStrings("/api/stats/overview", systemStatusPath(.tome).?);
     try std.testing.expect(systemStatusPath(.mumble) == null);
     try std.testing.expect(systemStatusPath(.attic) == null);
+    try std.testing.expect(systemStatusPath(.backup) == null);
 }
 
 test "udpEndpoint parses udp urls and rejects malformed endpoints" {
