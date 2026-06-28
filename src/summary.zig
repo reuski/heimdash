@@ -149,8 +149,7 @@ pub const Attic = struct {
 };
 
 pub const Ntfy = struct {
-    ok: bool,
-    age_seconds: u64,
+    count: u64,
 };
 
 pub const UserPassword = struct {
@@ -231,9 +230,10 @@ pub const Value = union(enum) {
                 try w.print("{d} online", .{item.users});
             },
             .attic => |item| try writeAtticAge(w, item.primed_age_seconds),
-            .ntfy => |item| {
-                try w.writeAll(if (item.ok) "nominal" else "fault");
-                try writeAgeAgo(w, item.age_seconds);
+            .ntfy => |item| if (item.count == 0) {
+                try w.writeAll("idle");
+            } else {
+                try w.print("{d} new", .{item.count});
             },
         }
     }
@@ -367,8 +367,6 @@ const TomeOverviewJson = struct {
 
 const NtfyMessageJson = struct {
     event: []const u8 = "",
-    time: i64 = 0,
-    priority: u8 = 3,
 };
 
 pub fn adapterForKind(kind: []const u8) ?Adapter {
@@ -413,7 +411,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .tome => "/api/stats/overview",
         .mumble => null,
         .attic => null,
-        .ntfy => "/json?poll=1",
+        .ntfy => "/json?poll=1&since=24h",
     };
 }
 
@@ -790,10 +788,8 @@ pub fn parseTome(allocator: std.mem.Allocator, overview_json: []const u8) !Tome 
     };
 }
 
-pub fn parseNtfy(allocator: std.mem.Allocator, body: []const u8, now_seconds: i64) !Ntfy {
-    var found = false;
-    var last_time: i64 = 0;
-    var ok = true;
+pub fn parseNtfy(allocator: std.mem.Allocator, body: []const u8) Ntfy {
+    var count: u64 = 0;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
@@ -802,16 +798,9 @@ pub fn parseNtfy(allocator: std.mem.Allocator, body: []const u8, now_seconds: i6
             .ignore_unknown_fields = true,
         }) catch continue;
         if (!std.mem.eql(u8, message.event, "message")) continue;
-        found = true;
-        last_time = message.time;
-        ok = message.priority < 4;
+        count += 1;
     }
-    if (!found) return error.SummaryUnavailable;
-    const age: u64 = if (last_time > 0 and now_seconds > last_time)
-        @intCast(now_seconds - last_time)
-    else
-        0;
-    return .{ .ok = ok, .age_seconds = age };
+    return .{ .count = count };
 }
 
 pub fn parseStampSeconds(text: []const u8) ?u64 {
@@ -829,18 +818,6 @@ fn writeAtticAge(w: *Io.Writer, age_seconds: u64) !void {
         try w.print("primed {d}h ago", .{age_seconds / 3600});
     } else {
         try w.print("primed {d}d ago", .{age_seconds / 86400});
-    }
-}
-
-fn writeAgeAgo(w: *Io.Writer, age_seconds: u64) !void {
-    if (age_seconds < 60) {
-        try w.writeAll(" just now");
-    } else if (age_seconds < 3600) {
-        try w.print(" {d}m ago", .{age_seconds / 60});
-    } else if (age_seconds < 86400) {
-        try w.print(" {d}h ago", .{age_seconds / 3600});
-    } else {
-        try w.print(" {d}d ago", .{age_seconds / 86400});
     }
 }
 
@@ -897,22 +874,21 @@ test "adapterForKind maps supported kinds only" {
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
-test "parseNtfy reads the latest digest status and age" {
+test "parseNtfy counts message events" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const body =
-        \\{"id":"a","time":1000,"event":"message","topic":"fleet","title":"FLEET SYNC :: NOMINAL","priority":3}
-        \\{"id":"b","time":2000,"event":"message","topic":"fleet","title":"FLEET SYNC :: FAULT","priority":4}
+        \\{"id":"a","time":1000,"event":"message","topic":"updates"}
+        \\{"id":"b","time":2000,"event":"open","topic":"updates"}
+        \\{"id":"c","time":3000,"event":"message","topic":"updates"}
     ;
-    const value = try parseNtfy(arena.allocator(), body, 2000 + 7200);
-    try std.testing.expect(!value.ok);
-    try std.testing.expectEqual(@as(u64, 7200), value.age_seconds);
+    try std.testing.expectEqual(@as(u64, 2), parseNtfy(arena.allocator(), body).count);
 }
 
-test "parseNtfy without messages is unavailable" {
+test "parseNtfy without messages counts zero" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    try std.testing.expectError(error.SummaryUnavailable, parseNtfy(arena.allocator(), "", 1000));
+    try std.testing.expectEqual(@as(u64, 0), parseNtfy(arena.allocator(), "").count);
 }
 
 test "authMethod maps each adapter to its credential mechanism" {
