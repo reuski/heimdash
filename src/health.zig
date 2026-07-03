@@ -17,6 +17,7 @@ pub const Config = struct {
     disk: Thresholds = .{ .warn = 80, .critical = 90 },
     disks: []const MountThreshold = &.{},
     temperature: Thresholds = .{ .warn = 75, .critical = 85 },
+    disk_temperature: Thresholds = .{ .warn = 70, .critical = 80 },
 };
 
 pub const State = enum { ok, warn, critical, unknown };

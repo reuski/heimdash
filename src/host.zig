@@ -7,6 +7,7 @@ const format = @import("format.zig");
 pub const Memory = struct { total: u64, available: u64 };
 pub const Disk = struct { total: u64, free: u64 };
 pub const DiskIo = struct { read_bytes: u64, write_bytes: u64 };
+pub const DiskTemperature = struct { milli_celsius: i64 };
 pub const CpuTimes = struct { total: u64, idle: u64 };
 pub const Network = struct { rx_bytes: u64, tx_bytes: u64 };
 
@@ -128,6 +129,38 @@ pub fn diskIo(io: Io, path: []const u8) !DiskIo {
     var buf: [64 * 1024]u8 = undefined;
     const text = try readSmall(io, "/proc/diskstats", &buf);
     return parseDiskstats(text, stx.dev_major, stx.dev_minor) orelse error.DiskIoUnavailable;
+}
+
+pub fn diskTemperature(io: Io, path: []const u8) !DiskTemperature {
+    try requireLinux();
+    const linux = std.os.linux;
+    var path_buf: [std.posix.PATH_MAX]u8 = undefined;
+    if (path.len >= path_buf.len) return error.NameTooLong;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+
+    var stx: linux.Statx = undefined;
+    const mask: linux.STATX = @bitCast(@as(u32, 0));
+    switch (linux.errno(linux.statx(linux.AT.FDCWD, @ptrCast(&path_buf), 0, mask, &stx))) {
+        .SUCCESS => {},
+        else => return error.DiskTemperatureUnavailable,
+    }
+
+    var hw: usize = 0;
+    while (hw < 8) : (hw += 1) {
+        var temp_path_buf: [160]u8 = undefined;
+        const temp_path = std.fmt.bufPrint(
+            &temp_path_buf,
+            "/sys/dev/block/{d}:{d}/../device/hwmon{d}/temp1_input",
+            .{ stx.dev_major, stx.dev_minor, hw },
+        ) catch unreachable;
+        var value_buf: [64]u8 = undefined;
+        const text = readSmall(io, temp_path, &value_buf) catch continue;
+        const milli = parseTemperature(text) orelse continue;
+        if (milli < -100_000 or milli > 200_000) continue;
+        return .{ .milli_celsius = milli };
+    }
+    return error.DiskTemperatureUnavailable;
 }
 
 fn requireLinux() !void {
