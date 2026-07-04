@@ -18,6 +18,7 @@ pub const Config = struct {
 const Usage = struct { total: u64, free: u64 };
 const Cpu = struct { util: u64, load: f64 };
 const Net = struct { rx_rate: u64, tx_rate: u64, link_speed: ?u64 };
+const Psi = struct { cpu: u64, memory: u64, io: u64 };
 
 const network_unknown_detail = format.download_marker ++ " --/s " ++ format.upload_marker ++ " --/s";
 
@@ -33,19 +34,20 @@ pub const Sampler = struct {
     memory: ?Usage = null,
     temperature: ?i64 = null,
     network: ?Net = null,
+    psi: ?Psi = null,
     last_network: ?TimedNetwork = null,
     last_cpu: ?host.CpuTimes = null,
 
     const cpu_index = 0;
     const memory_index = 1;
     const temperature_index = 2;
-    const network_down_index = 3;
-    const network_up_index = 4;
+    const network_index = 3;
+    const psi_index = 4;
     const disk_start_index = 5;
-    const system_row_count = 4;
+    const system_row_count = 5;
 
     pub fn init(allocator: std.mem.Allocator, cfg: Config) !Sampler {
-        const histories = try allocator.alloc(History, disk_start_index + cfg.mounts.len * 2);
+        const histories = try allocator.alloc(History, disk_start_index + cfg.mounts.len);
         for (histories) |*history| history.* = .{};
         const disks = try allocator.alloc(?Usage, cfg.mounts.len);
         @memset(disks, null);
@@ -87,27 +89,17 @@ pub const Sampler = struct {
         self.memory = memoryUsage(io) catch null;
         self.temperature = host.temperature(io) catch null;
         self.network = self.sampleNetwork(io, now);
+        self.psi = samplePressure(io);
 
         self.histories[cpu_index].push(if (self.cpu) |cpu| cpu.util else null);
         self.histories[memory_index].push(usagePercent(self.memory));
         self.histories[temperature_index].push(if (self.temperature) |milli| metric.scaledPercent(temperatureCelsius(milli), self.cfg.thresholds.temperature.critical) else null);
-        if (self.network) |net| {
-            self.histories[network_down_index].push(net.rx_rate);
-            self.histories[network_up_index].push(net.tx_rate);
-        } else {
-            self.histories[network_down_index].push(null);
-            self.histories[network_up_index].push(null);
-        }
-        const temp_offset = disk_start_index + self.cfg.mounts.len;
+        self.histories[network_index].push(if (self.network) |net| net.rx_rate else null);
+        self.histories[psi_index].push(if (self.psi) |psi| psiPeak(psi) / 10 else null);
         for (self.cfg.mounts, 0..) |mount, i| {
             self.disks[i] = diskUsage(mount) catch null;
             self.disk_temperatures[i] = host.diskTemperature(io, mount) catch null;
             self.histories[disk_start_index + i].push(self.diskIoSample(io, mount, i, now));
-            const temp_percent: ?u64 = if (self.disk_temperatures[i]) |t|
-                metric.scaledPercent(temperatureCelsius(t.milli_celsius), self.cfg.thresholds.disk_temperature.critical)
-            else
-                null;
-            self.histories[temp_offset + i].push(temp_percent);
         }
     }
 
@@ -149,21 +141,10 @@ pub const Sampler = struct {
         system_rows[1] = try self.memoryRow(arena);
         system_rows[2] = try self.temperatureRow(arena);
         system_rows[3] = try self.networkRow(arena);
+        system_rows[4] = try self.psiRow(arena);
 
-        var disk_count = self.cfg.mounts.len;
-        for (self.disk_temperatures) |t| if (t != null) {
-            disk_count += 1;
-        };
-        const disks = try arena.alloc(metric.Row, disk_count);
-        var di: usize = 0;
-        for (self.cfg.mounts, 0..) |mount, i| {
-            disks[di] = try self.storageRow(arena, mount, i);
-            di += 1;
-            if (self.disk_temperatures[i] != null) {
-                disks[di] = try self.tempRow(arena, mount, i);
-                di += 1;
-            }
-        }
+        const disks = try arena.alloc(metric.Row, self.cfg.mounts.len);
+        for (self.cfg.mounts, 0..) |mount, i| disks[i] = try self.storageRow(arena, mount, i);
 
         const sections = try arena.alloc(metric.Section, 2);
         sections[0] = .{ .id = "system", .title = "System", .rows = system_rows };
@@ -185,16 +166,16 @@ pub const Sampler = struct {
 
     fn memoryRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
         const history = try self.histories[memory_index].snapshot(arena);
-        return usageRow(arena, "Memory", self.memory, self.cfg.thresholds.memory, history);
+        return usageRow(arena, "MEM", self.memory, self.cfg.thresholds.memory, history);
     }
 
     fn temperatureRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
         const history = try self.histories[temperature_index].snapshot(arena);
-        const milli = self.temperature orelse return unknownRow("Temp", "-- C", history);
+        const milli = self.temperature orelse return unknownRow("THERM", "-- C", history);
         const celsius: u64 = temperatureCelsius(milli);
         var buf: [32]u8 = undefined;
         return .{
-            .label = "Temp",
+            .label = "THERM",
             .percent = metric.scaledPercent(celsius, self.cfg.thresholds.temperature.critical),
             .detail = try arena.dupe(u8, format.milliCelsius(&buf, milli)),
             .state = health.classify(celsius, self.cfg.thresholds.temperature),
@@ -203,9 +184,9 @@ pub const Sampler = struct {
     }
 
     fn networkRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
-        const history = try self.histories[network_down_index].snapshot(arena);
+        const history = try self.histories[network_index].snapshot(arena);
         const net = self.network orelse return .{
-            .label = "Network",
+            .label = "NET I/O",
             .percent = null,
             .detail = network_unknown_detail,
             .state = .unknown,
@@ -217,7 +198,7 @@ pub const Sampler = struct {
         segments[0] = .{ .signal = .down, .percent = networkPercent(net.rx_rate, net.link_speed) };
         segments[1] = .{ .signal = .up, .percent = networkPercent(net.tx_rate, net.link_speed) };
         return .{
-            .label = "Network",
+            .label = "NET I/O",
             .percent = null,
             .detail = try std.fmt.allocPrint(arena, "{s} {s} {s} {s}", .{
                 format.download_marker,
@@ -231,28 +212,37 @@ pub const Sampler = struct {
         };
     }
 
-    fn storageRow(self: *Sampler, arena: std.mem.Allocator, mount: []const u8, i: usize) !metric.Row {
-        const history = try self.histories[disk_start_index + i].snapshot(arena);
-        var row = try usageRow(arena, mount, self.disks[i], health.diskThresholdFor(self.cfg.thresholds, mount), history);
-        row.spark_relative = true;
-        return row;
-    }
-
-    fn tempRow(self: *Sampler, arena: std.mem.Allocator, mount: []const u8, i: usize) !metric.Row {
-        const temp_offset = disk_start_index + self.cfg.mounts.len;
-        const history = try self.histories[temp_offset + i].snapshot(arena);
-        const label = try std.fmt.allocPrint(arena, "{s} temp", .{mount});
-        const temp = self.disk_temperatures[i] orelse return unknownRow(label, "-- C", history);
-        const celsius = temperatureCelsius(temp.milli_celsius);
-        const thresholds = self.cfg.thresholds.disk_temperature;
-        var buf: [32]u8 = undefined;
+    fn psiRow(self: *Sampler, arena: std.mem.Allocator) !metric.Row {
+        const history = try self.histories[psi_index].snapshot(arena);
+        const psi = self.psi orelse return unknownRow("PSI", "cpu -- mem -- io --", history);
+        const peak = psiPeak(psi);
         return .{
-            .label = label,
-            .percent = metric.scaledPercent(celsius, thresholds.critical),
-            .detail = try arena.dupe(u8, format.milliCelsius(&buf, temp.milli_celsius)),
-            .state = health.classify(celsius, thresholds),
+            .label = "PSI",
+            .percent = peak / 10,
+            .detail = try std.fmt.allocPrint(arena, "cpu {d}.{d} mem {d}.{d} io {d}.{d}", .{
+                psi.cpu / 10,
+                psi.cpu % 10,
+                psi.memory / 10,
+                psi.memory % 10,
+                psi.io / 10,
+                psi.io % 10,
+            }),
+            .state = health.classify(peak / 10, self.cfg.thresholds.pressure),
             .history = history,
         };
+    }
+
+    fn storageRow(self: *Sampler, arena: std.mem.Allocator, mount: []const u8, i: usize) !metric.Row {
+        const history = try self.histories[disk_start_index + i].snapshot(arena);
+        return diskRow(
+            arena,
+            mount,
+            self.disks[i],
+            self.disk_temperatures[i],
+            health.diskThresholdFor(self.cfg.thresholds, mount),
+            self.cfg.thresholds.disk_temperature,
+            history,
+        );
     }
 
     fn sampleNetwork(self: *Sampler, io: Io, now: Io.Timestamp) ?Net {
@@ -275,6 +265,37 @@ pub const Sampler = struct {
         };
     }
 };
+
+fn samplePressure(io: Io) ?Psi {
+    return .{
+        .cpu = host.pressure(io, "cpu") catch return null,
+        .memory = host.pressure(io, "memory") catch return null,
+        .io = host.pressure(io, "io") catch return null,
+    };
+}
+
+fn psiPeak(psi: Psi) u64 {
+    return @max(psi.cpu, @max(psi.memory, psi.io));
+}
+
+fn diskRow(
+    arena: std.mem.Allocator,
+    mount: []const u8,
+    usage: ?Usage,
+    temperature: ?host.DiskTemperature,
+    usage_thresholds: health.Thresholds,
+    temperature_thresholds: health.Thresholds,
+    history: []const ?u64,
+) !metric.Row {
+    var row = try usageRow(arena, mount, usage, usage_thresholds, history);
+    row.spark_relative = true;
+    const temp = temperature orelse return row;
+    const celsius = temperatureCelsius(temp.milli_celsius);
+    var buf: [32]u8 = undefined;
+    row.detail = try std.fmt.allocPrint(arena, "{s} {s}", .{ row.detail, format.milliCelsius(&buf, temp.milli_celsius) });
+    row.state = health.worst(row.state, health.classify(celsius, temperature_thresholds));
+    return row;
+}
 
 fn usageRow(
     arena: std.mem.Allocator,
@@ -376,6 +397,33 @@ const History = struct {
         return values;
     }
 };
+
+test "diskRow folds usage and composite temperature into one row" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const usage_thresholds: health.Thresholds = .{ .warn = 80, .critical = 90 };
+    const temp_thresholds: health.Thresholds = .{ .warn = 70, .critical = 80 };
+    const gib = 1024 * 1024 * 1024;
+
+    const cool = try diskRow(arena, "/srv", .{ .total = 100 * gib, .free = 58 * gib }, .{ .milli_celsius = 41_200 }, usage_thresholds, temp_thresholds, &.{});
+    try std.testing.expectEqualStrings("/srv", cool.label);
+    try std.testing.expectEqual(@as(?u64, 42), cool.percent);
+    try std.testing.expectEqualStrings("58.0 GiB free 41.2 C", cool.detail);
+    try std.testing.expectEqual(health.State.ok, cool.state);
+    try std.testing.expect(cool.spark_relative);
+
+    const hot = try diskRow(arena, "/srv", .{ .total = 100 * gib, .free = 58 * gib }, .{ .milli_celsius = 82_000 }, usage_thresholds, temp_thresholds, &.{});
+    try std.testing.expectEqual(health.State.critical, hot.state);
+
+    const untemped = try diskRow(arena, "/srv", .{ .total = 100 * gib, .free = 4 * gib }, null, usage_thresholds, temp_thresholds, &.{});
+    try std.testing.expectEqualStrings("4.0 GiB free", untemped.detail);
+    try std.testing.expectEqual(health.State.critical, untemped.state);
+
+    const unknown = try diskRow(arena, "/srv", null, .{ .milli_celsius = 41_200 }, usage_thresholds, temp_thresholds, &.{});
+    try std.testing.expectEqualStrings("-- free 41.2 C", unknown.detail);
+    try std.testing.expectEqual(health.State.unknown, unknown.state);
+}
 
 test "history keeps newest values in order" {
     var history: History = .{};

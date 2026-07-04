@@ -57,24 +57,26 @@ nix fmt
 
 ## Config Keys
 
-| Key                      | Default             | Notes                     |
-| ------------------------ | ------------------- | ------------------------- |
-| `listen`                 | required            | bind address              |
-| `mounts`                 | required            | `statfs` usage rows       |
-| `networkInterface`       | Linux default route | down/up throughput source |
-| `services[].name`        | required            | display label             |
-| `services[].url`         | required            | link target               |
-| `services[].check`       | `url`               | reachability probe target |
-| `services[].api`         | `url`               | summary request base      |
-| `services[].kind`        | none                | summary adapter           |
-| `services[].credential`  | none                | systemd credential name   |
-| `services[].entity`      | none                | Home Assistant entity id  |
-| `services[].stamp`       | none                | Unix-timestamp stamp file |
-| `thresholds.cpu`         | `75/90`             | percent                   |
-| `thresholds.memory`      | `80/90`             | percent                   |
-| `thresholds.disk`        | `80/90`             | percent                   |
-| `thresholds.disks[]`     | none                | per-mount disk percent    |
-| `thresholds.temperature` | `75/85`             | Celsius                   |
+| Key                           | Default             | Notes                     |
+| ----------------------------- | ------------------- | ------------------------- |
+| `listen`                      | required            | bind address              |
+| `mounts`                      | required            | `statfs` usage rows       |
+| `networkInterface`            | Linux default route | down/up throughput source |
+| `services[].name`             | required            | display label             |
+| `services[].url`              | required            | link target               |
+| `services[].check`            | `url`               | reachability probe target |
+| `services[].api`              | `url`               | summary request base      |
+| `services[].kind`             | none                | summary adapter           |
+| `services[].credential`       | none                | systemd credential name   |
+| `services[].entity`           | none                | Home Assistant entity id  |
+| `services[].stamp`            | none                | Unix-timestamp stamp file |
+| `thresholds.cpu`              | `75/90`             | percent                   |
+| `thresholds.memory`           | `80/90`             | percent                   |
+| `thresholds.disk`             | `80/90`             | percent                   |
+| `thresholds.disks[]`          | none                | per-mount disk percent    |
+| `thresholds.temperature`      | `75/85`             | Celsius                   |
+| `thresholds.disk_temperature` | `70/80`             | Celsius                   |
+| `thresholds.pressure`         | `25/50`             | PSI `some avg10` percent  |
 
 ## Service Kinds
 

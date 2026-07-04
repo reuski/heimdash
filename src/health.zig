@@ -18,6 +18,7 @@ pub const Config = struct {
     disks: []const MountThreshold = &.{},
     temperature: Thresholds = .{ .warn = 75, .critical = 85 },
     disk_temperature: Thresholds = .{ .warn = 70, .critical = 80 },
+    pressure: Thresholds = .{ .warn = 25, .critical = 50 },
 };
 
 pub const State = enum { ok, warn, critical, unknown };
@@ -26,6 +27,13 @@ pub fn classify(pct: ?u64, t: Thresholds) State {
     const p = pct orelse return .unknown;
     if (p >= @as(u64, t.critical)) return .critical;
     if (p >= @as(u64, t.warn)) return .warn;
+    return .ok;
+}
+
+pub fn worst(a: State, b: State) State {
+    if (a == .critical or b == .critical) return .critical;
+    if (a == .warn or b == .warn) return .warn;
+    if (a == .unknown or b == .unknown) return .unknown;
     return .ok;
 }
 
@@ -56,6 +64,14 @@ test "classify maps percentages to states" {
     try std.testing.expectEqual(State.critical, classify(100, t));
 }
 
+test "worst returns the more severe state and treats unknown below warn" {
+    try std.testing.expectEqual(State.ok, worst(.ok, .ok));
+    try std.testing.expectEqual(State.warn, worst(.ok, .warn));
+    try std.testing.expectEqual(State.critical, worst(.warn, .critical));
+    try std.testing.expectEqual(State.warn, worst(.unknown, .warn));
+    try std.testing.expectEqual(State.unknown, worst(.unknown, .ok));
+}
+
 test "diskThresholdFor prefers per-mount override then disk default" {
     const overrides = [_]MountThreshold{.{ .mount = "/mnt/media", .warn = 90, .critical = 97 }};
     const cfg: Config = .{ .disks = &overrides };
@@ -79,6 +95,8 @@ test "Config parses with defaulted and partial fields" {
     try std.testing.expectEqual(@as(u8, 99), diskThresholdFor(cfg, "/srv").critical);
     try std.testing.expectEqual(@as(u8, 75), cfg.temperature.warn);
     try std.testing.expectEqual(@as(u8, 85), cfg.temperature.critical);
+    try std.testing.expectEqual(@as(u8, 25), cfg.pressure.warn);
+    try std.testing.expectEqual(@as(u8, 50), cfg.pressure.critical);
 }
 
 test "cssClass covers every state" {

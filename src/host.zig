@@ -67,6 +67,15 @@ pub fn temperature(io: Io) !i64 {
     return best orelse error.TemperatureUnavailable;
 }
 
+pub fn pressure(io: Io, resource: []const u8) !u64 {
+    try requireLinux();
+    var path_buf: [64]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "/proc/pressure/{s}", .{resource}) catch return error.NameTooLong;
+    var buf: [256]u8 = undefined;
+    const text = try readSmall(io, path, &buf);
+    return parsePressure(text) orelse error.PressureUnavailable;
+}
+
 pub fn defaultInterface(io: Io, buf: []u8) ![]const u8 {
     try requireLinux();
     var text_buf: [4096]u8 = undefined;
@@ -171,6 +180,16 @@ pub fn parseTemperature(text: []const u8) ?i64 {
     const value = std.mem.trim(u8, text, " \t\r\n");
     if (value.len == 0) return null;
     return std.fmt.parseInt(i64, value, 10) catch null;
+}
+
+pub fn parsePressure(text: []const u8) ?u64 {
+    const marker = "some avg10=";
+    const idx = std.mem.indexOf(u8, text, marker) orelse return null;
+    const rest = text[idx + marker.len ..];
+    const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
+    const whole = std.fmt.parseInt(u64, rest[0..dot], 10) catch return null;
+    if (dot + 1 >= rest.len or !std.ascii.isDigit(rest[dot + 1])) return null;
+    return whole * 10 + (rest[dot + 1] - '0');
 }
 
 pub fn parseCpuTimes(text: []const u8) ?CpuTimes {
@@ -280,6 +299,18 @@ test "parseTemperature trims thermal zone values" {
     try std.testing.expectEqual(@as(?i64, 42123), parseTemperature("42123\n"));
     try std.testing.expectEqual(@as(?i64, -5000), parseTemperature(" -5000 "));
     try std.testing.expectEqual(@as(?i64, null), parseTemperature("\n"));
+}
+
+test "parsePressure reads the some avg10 stall percent as deci-percent" {
+    const text =
+        \\some avg10=1.23 avg60=0.80 avg300=0.40 total=123456
+        \\full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+    ;
+    try std.testing.expectEqual(@as(?u64, 12), parsePressure(text));
+    try std.testing.expectEqual(@as(?u64, 0), parsePressure("some avg10=0.00 avg60=0.00"));
+    try std.testing.expectEqual(@as(?u64, 995), parsePressure("some avg10=99.50 total=1"));
+    try std.testing.expectEqual(@as(?u64, null), parsePressure("full avg10=0.00"));
+    try std.testing.expectEqual(@as(?u64, null), parsePressure("some avg10=x"));
 }
 
 test "parseCpuTimes totals jiffies and counts idle plus iowait" {

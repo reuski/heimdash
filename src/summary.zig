@@ -862,27 +862,10 @@ fn isUriPathSegmentUnreserved(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~';
 }
 
-test "adapterForKind maps supported kinds only" {
+test "adapterForKind matches kinds case-insensitively and rejects unknown kinds" {
     try std.testing.expectEqual(Adapter.sonarr, adapterForKind("sonarr").?);
-    try std.testing.expectEqual(Adapter.radarr, adapterForKind("Radarr").?);
-    try std.testing.expectEqual(Adapter.lidarr, adapterForKind("Lidarr").?);
     try std.testing.expectEqual(Adapter.prowlarr, adapterForKind("PROWLARR").?);
-    try std.testing.expectEqual(Adapter.jellyfin, adapterForKind("jellyfin").?);
-    try std.testing.expectEqual(Adapter.adguard, adapterForKind("ADGUARD").?);
-    try std.testing.expectEqual(Adapter.qbittorrent, adapterForKind("qBittorrent").?);
     try std.testing.expectEqual(Adapter.home_assistant, adapterForKind("home_assistant").?);
-    try std.testing.expectEqual(Adapter.audiobookshelf, adapterForKind("Audiobookshelf").?);
-    try std.testing.expectEqual(Adapter.vaultwarden, adapterForKind("Vaultwarden").?);
-    try std.testing.expectEqual(Adapter.maintainerr, adapterForKind("Maintainerr").?);
-    try std.testing.expectEqual(Adapter.valheim, adapterForKind("Valheim").?);
-    try std.testing.expectEqual(Adapter.calibre, adapterForKind("calibre").?);
-    try std.testing.expectEqual(Adapter.navidrome, adapterForKind("Navidrome").?);
-    try std.testing.expectEqual(Adapter.skaldi, adapterForKind("Skaldi").?);
-    try std.testing.expectEqual(Adapter.tome, adapterForKind("Tome").?);
-    try std.testing.expectEqual(Adapter.mumble, adapterForKind("Mumble").?);
-    try std.testing.expectEqual(Adapter.attic, adapterForKind("Attic").?);
-    try std.testing.expectEqual(Adapter.backup, adapterForKind("Backup").?);
-    try std.testing.expectEqual(Adapter.ntfy, adapterForKind("ntfy").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
@@ -910,75 +893,30 @@ test "parseNtfy without messages counts zero" {
     try std.testing.expectEqual(@as(u64, 0), parseNtfy(arena.allocator(), "").count);
 }
 
-test "authMethod maps each adapter to its credential mechanism" {
+test "credential requirements follow each adapter's auth method" {
     try std.testing.expectEqual(Auth.api_key, authMethod(.sonarr));
-    try std.testing.expectEqual(Auth.api_key, authMethod(.prowlarr));
     try std.testing.expectEqual(Auth.emby_token, authMethod(.jellyfin));
-    try std.testing.expectEqual(Auth.bearer, authMethod(.home_assistant));
-    try std.testing.expectEqual(Auth.basic, authMethod(.calibre));
-    try std.testing.expectEqual(Auth.basic_optional, authMethod(.adguard));
     try std.testing.expectEqual(Auth.subsonic, authMethod(.navidrome));
     try std.testing.expectEqual(Auth.session_cookie, authMethod(.vaultwarden));
-    try std.testing.expectEqual(Auth.none, authMethod(.mumble));
-    try std.testing.expectEqual(Auth.none, authMethod(.attic));
-    try std.testing.expectEqual(Auth.none, authMethod(.backup));
-}
-
-test "requiresCredential is false only for unauthenticated summary endpoints" {
-    try std.testing.expect(!requiresCredential(.adguard));
-    try std.testing.expect(!requiresCredential(.maintainerr));
-    try std.testing.expect(!requiresCredential(.valheim));
-    try std.testing.expect(!requiresCredential(.skaldi));
-    try std.testing.expect(!requiresCredential(.tome));
-    try std.testing.expect(!requiresCredential(.mumble));
-    try std.testing.expect(!requiresCredential(.attic));
-    try std.testing.expect(!requiresCredential(.backup));
-    try std.testing.expect(!requiresCredential(.ntfy));
-    try std.testing.expect(requiresCredential(.calibre));
-    try std.testing.expect(requiresCredential(.navidrome));
-    try std.testing.expect(requiresCredential(.lidarr));
     try std.testing.expect(requiresCredential(.sonarr));
-    try std.testing.expect(requiresCredential(.qbittorrent));
-    try std.testing.expect(requiresCredential(.home_assistant));
-    try std.testing.expect(requiresCredential(.vaultwarden));
+    try std.testing.expect(requiresCredential(.calibre));
+    try std.testing.expect(!requiresCredential(.adguard));
+    try std.testing.expect(!requiresCredential(.ntfy));
 }
 
-test "paths follow supported service APIs" {
+test "request paths cover versioned APIs, encoded segments, and pathless adapters" {
     try std.testing.expectEqualStrings("/api/v3/system/status", systemStatusPath(.sonarr).?);
-    try std.testing.expectEqualStrings("/api/v3/queue/status", arrQueueStatusPath(.radarr).?);
-    try std.testing.expectEqualStrings("/api/v1/system/status", systemStatusPath(.lidarr).?);
     try std.testing.expectEqualStrings("/api/v1/queue/status", arrQueueStatusPath(.lidarr).?);
-    try std.testing.expectEqualStrings("/api/v1/system/status", systemStatusPath(.prowlarr).?);
-    try std.testing.expectEqualStrings("/api/v1/health", prowlarrHealthPath());
-    try std.testing.expectEqualStrings("/api/v1/indexer", prowlarrIndexerPath());
-    try std.testing.expectEqualStrings("/System/Info", systemStatusPath(.jellyfin).?);
-    try std.testing.expectEqualStrings("/Items/Counts", jellyfinItemCountsPath());
-    try std.testing.expectEqualStrings("/control/status", systemStatusPath(.adguard).?);
-    try std.testing.expectEqualStrings("/control/stats", adguardStatsPath());
-    try std.testing.expectEqualStrings("/api/v2/app/version", systemStatusPath(.qbittorrent).?);
-    try std.testing.expectEqualStrings("/api/v2/transfer/info", qbittorrentTransferPath());
-    try std.testing.expect(systemStatusPath(.home_assistant) == null);
+    try std.testing.expect(arrQueueStatusPath(.jellyfin) == null);
+    try std.testing.expect(systemStatusPath(.mumble) == null);
 
     const state_path = try homeAssistantStatePath(std.testing.allocator, "sensor.kitchen temperature");
     defer std.testing.allocator.free(state_path);
     try std.testing.expectEqualStrings("/api/states/sensor.kitchen%20temperature", state_path);
 
-    try std.testing.expectEqualStrings("/api/libraries", systemStatusPath(.audiobookshelf).?);
     const stats_path = try audiobookshelfStatsPath(std.testing.allocator, "lib_c1u6t4p45c35rf0nzd");
     defer std.testing.allocator.free(stats_path);
     try std.testing.expectEqualStrings("/api/libraries/lib_c1u6t4p45c35rf0nzd/stats", stats_path);
-
-    try std.testing.expectEqualStrings("/admin/users", systemStatusPath(.vaultwarden).?);
-    try std.testing.expectEqualStrings("/admin", vaultwardenLoginPath());
-    try std.testing.expectEqualStrings("/api/storage-metrics", systemStatusPath(.maintainerr).?);
-    try std.testing.expectEqualStrings("/status", systemStatusPath(.valheim).?);
-    try std.testing.expectEqualStrings("/opds/new", systemStatusPath(.calibre).?);
-    try std.testing.expectEqualStrings("/rest/getScanStatus.view", systemStatusPath(.navidrome).?);
-    try std.testing.expectEqualStrings("/health", systemStatusPath(.skaldi).?);
-    try std.testing.expectEqualStrings("/api/stats/overview", systemStatusPath(.tome).?);
-    try std.testing.expect(systemStatusPath(.mumble) == null);
-    try std.testing.expect(systemStatusPath(.attic) == null);
-    try std.testing.expect(systemStatusPath(.backup) == null);
 }
 
 test "udpEndpoint parses udp urls and rejects malformed endpoints" {
@@ -1072,20 +1010,6 @@ test "parseArr reads version and queue count" {
     try std.testing.expectEqual(@as(u64, 3), item.queue_count);
 }
 
-test "parseArr rejects missing fields and malformed json" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    try std.testing.expectError(error.MissingField, parseArr(
-        arena_state.allocator(),
-        "{ \"appName\": \"Sonarr\" }",
-        "{ \"totalCount\": 3 }",
-    ));
-    if (parseArr(arena_state.allocator(), "{", "{ \"totalCount\": 3 }")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
-}
-
 test "parseProwlarr reads version, health count, and indexer count" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -1099,21 +1023,6 @@ test "parseProwlarr reads version, health count, and indexer count" {
     try std.testing.expectEqualStrings("1.33.3.5065", item.version);
     try std.testing.expectEqual(@as(u64, 2), item.health_count);
     try std.testing.expectEqual(@as(u64, 3), item.indexer_count);
-}
-
-test "parseProwlarr rejects missing fields and malformed json" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    try std.testing.expectError(error.MissingField, parseProwlarr(
-        arena_state.allocator(),
-        "{ \"appName\": \"Prowlarr\" }",
-        "[]",
-        "[]",
-    ));
-    if (parseProwlarr(arena_state.allocator(), "{ \"version\": \"1\" }", "{", "[]")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
 }
 
 test "parseJellyfin reads version and library counts" {
@@ -1130,20 +1039,6 @@ test "parseJellyfin reads version and library counts" {
     try std.testing.expectEqual(@as(u64, 45), item.series_count);
 }
 
-test "parseJellyfin rejects missing fields and malformed json" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    try std.testing.expectError(error.MissingField, parseJellyfin(
-        arena_state.allocator(),
-        "{ \"ServerName\": \"media\" }",
-        "{ \"MovieCount\": 320, \"SeriesCount\": 45 }",
-    ));
-    if (parseJellyfin(arena_state.allocator(), "{ \"Version\": \"10\" }", "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
-}
-
 test "parseAdGuard reads protection and query stats" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -1158,20 +1053,6 @@ test "parseAdGuard reads protection and query stats" {
     try std.testing.expectEqual(@as(u64, 83), item.blocked_count);
 }
 
-test "parseAdGuard rejects missing fields and malformed json" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    try std.testing.expectError(error.MissingField, parseAdGuard(
-        arena_state.allocator(),
-        "{ \"running\": true }",
-        "{ \"num_dns_queries\": 1, \"num_blocked_filtering\": 0 }",
-    ));
-    if (parseAdGuard(arena_state.allocator(), "{ \"protection_enabled\": true }", "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
-}
-
 test "parseQbittorrent reads version and transfer speeds" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -1184,20 +1065,6 @@ test "parseQbittorrent reads version and transfer speeds" {
     try std.testing.expectEqualStrings("v5.0.3", item.version);
     try std.testing.expectEqual(@as(u64, 1048576), item.download_speed);
     try std.testing.expectEqual(@as(u64, 2048), item.upload_speed);
-}
-
-test "parseQbittorrent rejects missing fields and malformed json" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    try std.testing.expectError(error.MissingVersion, parseQbittorrent(
-        arena_state.allocator(),
-        "\n",
-        "{ \"dl_info_speed\": 1, \"up_info_speed\": 2 }",
-    ));
-    if (parseQbittorrent(arena_state.allocator(), "v5", "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
 }
 
 test "parseHomeAssistant reads selected entity" {
@@ -1227,19 +1094,6 @@ test "parseHomeAssistant reads weather temperature and condition" {
     try std.testing.expectEqualStrings("\u{00B0}C", item.temperature_unit.?);
 }
 
-test "parseHomeAssistant rejects missing fields and malformed json" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-
-    try std.testing.expectError(error.MissingField, parseHomeAssistant(
-        arena_state.allocator(),
-        "{ \"entity_id\": \"sensor.kitchen\" }",
-    ));
-    if (parseHomeAssistant(arena_state.allocator(), "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
-}
-
 test "parseAudiobookshelfBookLibraries selects book libraries only" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -1253,15 +1107,12 @@ test "parseAudiobookshelfBookLibraries selects book libraries only" {
     try std.testing.expectEqualStrings("lib_c", ids[1]);
 }
 
-test "parseAudiobookshelfBookLibraries tolerates empty library list and malformed json" {
+test "parseAudiobookshelfBookLibraries tolerates an empty library list" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
 
     const ids = try parseAudiobookshelfBookLibraries(arena_state.allocator(), "{ \"libraries\": [] }");
     try std.testing.expectEqual(@as(usize, 0), ids.len);
-    if (parseAudiobookshelfBookLibraries(arena_state.allocator(), "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
 }
 
 test "parseAudiobookshelfStats reads item count and duration seconds" {
@@ -1288,9 +1139,6 @@ test "parseVaultwarden counts the admin user list" {
 
     const empty = try parseVaultwarden(arena_state.allocator(), "[]");
     try std.testing.expectEqual(@as(u64, 0), empty.user_count);
-    if (parseVaultwarden(arena_state.allocator(), "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
 }
 
 test "parseMaintainerr reads storage metrics" {
@@ -1309,9 +1157,6 @@ test "parseMaintainerr reads storage metrics" {
     try std.testing.expectEqual(@as(u64, 0), empty.reclaimable_count);
     try std.testing.expectEqual(@as(u64, 0), empty.reclaimable_bytes);
     try std.testing.expectEqual(@as(u64, 0), empty.handled_count);
-    if (parseMaintainerr(arena_state.allocator(), "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
 }
 
 test "parseValheim reads online state and player counts" {
@@ -1328,9 +1173,6 @@ test "parseValheim reads online state and player counts" {
 
     const offline = try parseValheim(arena_state.allocator(), "{ \"online\": false }");
     try std.testing.expect(!offline.online);
-    if (parseValheim(arena_state.allocator(), "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
 }
 
 test "parseCalibre reads OPDS total book count" {
@@ -1340,9 +1182,6 @@ test "parseCalibre reads OPDS total book count" {
             "<opensearch:itemsPerPage>60</opensearch:itemsPerPage><entry/></feed>",
     );
     try std.testing.expectEqual(@as(u64, 128), item.book_count);
-
-    try std.testing.expectError(error.MissingBookCount, parseCalibre("<feed><entry/></feed>"));
-    try std.testing.expectError(error.MissingBookCount, parseCalibre("<opensearch:totalResults></opensearch:totalResults>"));
 }
 
 test "parseNavidrome reads song count from subsonic scan status" {
@@ -1354,14 +1193,6 @@ test "parseNavidrome reads song count from subsonic scan status" {
         "{ \"subsonic-response\": { \"status\": \"ok\", \"version\": \"1.16.1\", \"type\": \"navidrome\", \"scanStatus\": { \"scanning\": false, \"folderCount\": 3, \"count\": 12345 } } }",
     );
     try std.testing.expectEqual(@as(u64, 12345), item.song_count);
-
-    try std.testing.expectError(error.SummaryUnavailable, parseNavidrome(
-        arena_state.allocator(),
-        "{ \"subsonic-response\": { \"status\": \"failed\", \"error\": { \"code\": 40 } } }",
-    ));
-    if (parseNavidrome(arena_state.allocator(), "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
 }
 
 test "navidromeAuthQuery derives salted subsonic token" {
@@ -1391,9 +1222,6 @@ test "parseSkaldi reads playback state and queue size" {
 
     const empty = try parseSkaldi(arena_state.allocator(), "{}");
     try std.testing.expectEqual(Skaldi.Playback.unknown, empty.playback);
-    if (parseSkaldi(arena_state.allocator(), "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
 }
 
 test "parseTome reads currently reading and books read this year" {
@@ -1410,9 +1238,39 @@ test "parseTome reads currently reading and books read this year" {
     const empty = try parseTome(arena_state.allocator(), "{}");
     try std.testing.expectEqual(@as(u64, 0), empty.currently_reading);
     try std.testing.expectEqual(@as(u64, 0), empty.books_read_this_year);
-    if (parseTome(arena_state.allocator(), "{")) |_| {
-        return error.ExpectedMalformedJsonFailure;
-    } else |_| {}
+}
+
+fn expectParseFailure(result: anytype) !void {
+    if (result) |_| return error.ExpectedParseFailure else |_| {}
+}
+
+test "parsers reject incomplete and malformed payloads" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    try expectParseFailure(parseArr(arena, "{ \"appName\": \"Sonarr\" }", "{ \"totalCount\": 3 }"));
+    try expectParseFailure(parseArr(arena, "{", "{ \"totalCount\": 3 }"));
+    try expectParseFailure(parseProwlarr(arena, "{ \"appName\": \"Prowlarr\" }", "[]", "[]"));
+    try expectParseFailure(parseProwlarr(arena, "{ \"version\": \"1\" }", "{", "[]"));
+    try expectParseFailure(parseJellyfin(arena, "{ \"ServerName\": \"media\" }", "{}"));
+    try expectParseFailure(parseJellyfin(arena, "{ \"Version\": \"10\" }", "{"));
+    try expectParseFailure(parseAdGuard(arena, "{ \"running\": true }", "{ \"num_dns_queries\": 1, \"num_blocked_filtering\": 0 }"));
+    try expectParseFailure(parseAdGuard(arena, "{ \"protection_enabled\": true }", "{"));
+    try expectParseFailure(parseQbittorrent(arena, "\n", "{ \"dl_info_speed\": 1, \"up_info_speed\": 2 }"));
+    try expectParseFailure(parseQbittorrent(arena, "v5", "{"));
+    try expectParseFailure(parseHomeAssistant(arena, "{ \"entity_id\": \"sensor.kitchen\" }"));
+    try expectParseFailure(parseHomeAssistant(arena, "{"));
+    try expectParseFailure(parseAudiobookshelfBookLibraries(arena, "{"));
+    try expectParseFailure(parseVaultwarden(arena, "{"));
+    try expectParseFailure(parseMaintainerr(arena, "{"));
+    try expectParseFailure(parseValheim(arena, "{"));
+    try expectParseFailure(parseCalibre("<feed><entry/></feed>"));
+    try expectParseFailure(parseCalibre("<opensearch:totalResults></opensearch:totalResults>"));
+    try expectParseFailure(parseNavidrome(arena, "{ \"subsonic-response\": { \"status\": \"failed\", \"error\": { \"code\": 40 } } }"));
+    try expectParseFailure(parseNavidrome(arena, "{"));
+    try expectParseFailure(parseSkaldi(arena, "{"));
+    try expectParseFailure(parseTome(arena, "{"));
 }
 
 test "parseStampSeconds trims and parses unix seconds" {

@@ -19,8 +19,6 @@ pub const ServiceSummary = struct {
 pub const MetricRow = metric.Row;
 pub const Metrics = metric.Snapshot;
 
-const meter_cell_count = 48;
-
 pub const Services = struct {
     items: []const ServiceCard,
     states: ?[]const ServiceReachability = null,
@@ -136,19 +134,17 @@ fn metricRow(w: *Io.Writer, row: MetricRow) !void {
 }
 
 fn metricBar(w: *Io.Writer, row: MetricRow) !void {
+    try w.writeAll("<span class=\"bar\">");
     if (row.segments.len == 0) {
-        try w.writeAll("<span class=\"bar is-led\">");
-        try meterRow(w, "is-single", row.percent orelse 0);
-        try meterRow(w, "is-single", row.percent orelse 0);
-        try w.writeAll("</span>");
-        return;
-    }
-
-    try w.writeAll("<span class=\"bar is-led is-split\">");
-    for (row.segments) |segment| {
-        try meterRow(w, signalClass(segment.signal), segment.percent);
+        try meter(w, "", row.percent orelse 0);
+    } else for (row.segments) |segment| {
+        try meter(w, signalClass(segment.signal), segment.percent);
     }
     try w.writeAll("</span>");
+}
+
+fn meter(w: *Io.Writer, class: []const u8, percent: u64) !void {
+    try w.print("<span class=\"meter{s}\" style=\"--pct:{d}%\"></span>", .{ class, @min(percent, 100) });
 }
 
 const spark_resolution = 120;
@@ -246,28 +242,10 @@ fn sparkMeanLine(w: *Io.Writer, run: []const ?SparkBucket, start: usize, ceiling
     try w.writeAll("\" />");
 }
 
-fn meterRow(w: *Io.Writer, class: []const u8, percent: u64) !void {
-    const lit = litCellCount(percent);
-    try w.print("<span class=\"meter-row {s}\">", .{class});
-    for (0..meter_cell_count) |i| {
-        if (i < lit) {
-            try w.writeAll("<span class=\"led is-lit\"></span>");
-        } else {
-            try w.writeAll("<span class=\"led\"></span>");
-        }
-    }
-    try w.writeAll("</span>");
-}
-
-fn litCellCount(percent: u64) usize {
-    const pct = @min(percent, 100);
-    return @intCast((@as(u128, pct) * meter_cell_count + 99) / 100);
-}
-
 fn signalClass(signal: metric.Signal) []const u8 {
     return switch (signal) {
-        .down => "is-down",
-        .up => "is-up",
+        .down => " is-down",
+        .up => " is-up",
     };
 }
 
@@ -312,10 +290,17 @@ test "metric row rendering preserves classes width and escaping" {
 
     const html = aw.written();
     try std.testing.expect(std.mem.indexOf(u8, html, "<li class=\"is-unknown\"><span class=\"label\">Disk &lt;root&gt;</span>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"bar is-led\">") != null);
-    try std.testing.expectEqual(@as(usize, 2), countOccurrences(html, "meter-row is-single"));
-    try std.testing.expectEqual(@as(usize, meter_cell_count * 2), countOccurrences(html, "class=\"led"));
+    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"bar\"><span class=\"meter\" style=\"--pct:0%\"></span></span>") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"free\">-- free</span></li>") != null);
+}
+
+test "metric meter renders the percent custom property and caps at full scale" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    try metricRow(&aw.writer, .{ .label = "CPU", .percent = 120, .detail = "load 9.99", .state = .critical });
+
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "<span class=\"meter\" style=\"--pct:100%\"></span>") != null);
 }
 
 test "metric row rendering supports split meter segments" {
@@ -335,10 +320,11 @@ test "metric row rendering supports split meter segments" {
     });
 
     const html = aw.written();
-    try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"bar is-led is-split\">") != null);
-    try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "meter-row is-down"));
-    try std.testing.expectEqual(@as(usize, 1), countOccurrences(html, "meter-row is-up"));
-    try std.testing.expectEqual(@as(usize, meter_cell_count * 2), countOccurrences(html, "class=\"led"));
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        html,
+        "<span class=\"bar\"><span class=\"meter is-down\" style=\"--pct:12%\"></span><span class=\"meter is-up\" style=\"--pct:4%\"></span></span>",
+    ) != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "<span class=\"free\">\u{25BC} 1.0M/s \u{25B2} 512B/s</span></li>") != null);
 }
 
@@ -422,14 +408,6 @@ test "sparkline draws a min/max envelope band under the mean line for aggregated
     try std.testing.expect(std.mem.indexOf(u8, html, "<polyline class=\"spark-line\" points=\"0,50 1,50") != null);
 }
 
-test "meter cell counts round up visible values and cap at full scale" {
-    try std.testing.expectEqual(@as(usize, 0), litCellCount(0));
-    try std.testing.expectEqual(@as(usize, 1), litCellCount(1));
-    try std.testing.expectEqual(@as(usize, meter_cell_count / 2), litCellCount(50));
-    try std.testing.expectEqual(@as(usize, meter_cell_count), litCellCount(100));
-    try std.testing.expectEqual(@as(usize, meter_cell_count), litCellCount(120));
-}
-
 fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
     var count: usize = 0;
     var i: usize = 0;
@@ -464,4 +442,40 @@ test "metrics rendering preserves morph targets" {
     try std.testing.expect(std.mem.indexOf(u8, html, "<section id=\"metrics\">") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "<ul id=\"system\">") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "<ul id=\"disks\">") != null);
+}
+
+test "page splices host data into the template and preserves morph targets" {
+    const template = "<head></head><h1>heimdash</h1><span id=\"uptime\"></span>" ++
+        "<section id=\"metrics\"><ul id=\"disks\"></ul></section><ul id=\"services\"></ul><footer></footer>";
+    const rows = [_]MetricRow{.{ .label = "CPU", .percent = 12, .detail = "load 0.25", .state = .ok }};
+    const sections = [_]metric.Section{.{ .id = "system", .title = "System", .rows = &rows }};
+    const service_items = [_]ServiceCard{.{ .name = "Jellyfin", .url = "http://jellyfin.invalid" }};
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    try page(&aw.writer, template, .{
+        .hostname = "argos<1>",
+        .uptime = "up 1d 2h 3m",
+        .metrics = .{ .sections = &sections },
+        .services = .{ .items = &service_items },
+    });
+
+    const html = aw.written();
+    try std.testing.expect(std.mem.startsWith(u8, html, "<head></head><h1>argos&lt;1&gt;</h1>"));
+    try std.testing.expect(std.mem.indexOf(u8, html, "<span id=\"uptime\">up 1d 2h 3m</span>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<section id=\"metrics\"><h2>System</h2><ul id=\"system\">") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<ul id=\"services\">") != null);
+    try std.testing.expect(std.mem.endsWith(u8, html, "<footer></footer>"));
+}
+
+test "page rejects a template whose metrics section never closes" {
+    var aw: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+
+    try std.testing.expectError(error.InvalidIndexHtml, page(&aw.writer, "<section id=\"metrics\">", .{
+        .hostname = "argos",
+        .uptime = "up 0d 0h 1m",
+        .metrics = .{ .sections = &.{} },
+        .services = .{ .items = &.{} },
+    }));
 }
