@@ -20,6 +20,7 @@ pub const Adapter = enum {
     navidrome,
     skaldi,
     tome,
+    trek,
     mumble,
     attic,
     backup,
@@ -39,7 +40,7 @@ pub const Auth = enum {
 
 pub fn authMethod(adapter: Adapter) Auth {
     return switch (adapter) {
-        .maintainerr, .valheim, .skaldi, .tome, .mumble, .attic, .backup, .ntfy => .none,
+        .maintainerr, .valheim, .skaldi, .tome, .trek, .mumble, .attic, .backup, .ntfy => .none,
         .sonarr, .radarr, .lidarr, .prowlarr => .api_key,
         .jellyfin => .emby_token,
         .qbittorrent, .home_assistant, .audiobookshelf => .bearer,
@@ -140,6 +141,10 @@ pub const Tome = struct {
     books_read_this_year: u64,
 };
 
+pub const Trek = struct {
+    user_count: u64,
+};
+
 pub const Mumble = struct {
     users: u32,
     max_users: u32,
@@ -179,6 +184,7 @@ pub const Value = union(enum) {
     navidrome: Navidrome,
     skaldi: Skaldi,
     tome: Tome,
+    trek: Trek,
     mumble: Mumble,
     attic: Attic,
     backup: Backup,
@@ -232,6 +238,7 @@ pub const Value = union(enum) {
                 .paused => try w.print("\u{23F8} {d} queued", .{item.queue}),
             },
             .tome => |item| try w.print("{d} reading {d} yr", .{ item.currently_reading, item.books_read_this_year }),
+            .trek => |item| try w.print("{d} users", .{item.user_count}),
             .mumble => |item| if (item.max_users > 0) {
                 try w.print("{d}/{d} online", .{ item.users, item.max_users });
             } else {
@@ -374,6 +381,11 @@ const TomeOverviewJson = struct {
     booksRead: TomeBooksReadJson = .{},
 };
 
+const TrekHealthJson = struct {
+    ok: bool = false,
+    userCount: ?u64 = null,
+};
+
 const NtfyMessageJson = struct {
     event: []const u8 = "",
 };
@@ -395,6 +407,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "navidrome")) return .navidrome;
     if (std.ascii.eqlIgnoreCase(kind, "skaldi")) return .skaldi;
     if (std.ascii.eqlIgnoreCase(kind, "tome")) return .tome;
+    if (std.ascii.eqlIgnoreCase(kind, "trek")) return .trek;
     if (std.ascii.eqlIgnoreCase(kind, "mumble")) return .mumble;
     if (std.ascii.eqlIgnoreCase(kind, "attic")) return .attic;
     if (std.ascii.eqlIgnoreCase(kind, "backup")) return .backup;
@@ -419,6 +432,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .navidrome => "/rest/getScanStatus.view",
         .skaldi => "/health",
         .tome => "/api/stats/overview",
+        .trek => "/api/_nest/health",
         .mumble => null,
         .attic => null,
         .backup => null,
@@ -799,6 +813,14 @@ pub fn parseTome(allocator: std.mem.Allocator, overview_json: []const u8) !Tome 
     };
 }
 
+pub fn parseTrek(allocator: std.mem.Allocator, health_json: []const u8) !Trek {
+    const health = try std.json.parseFromSliceLeaky(TrekHealthJson, allocator, health_json, .{
+        .ignore_unknown_fields = true,
+    });
+    if (!health.ok) return error.SummaryUnavailable;
+    return .{ .user_count = health.userCount orelse return error.SummaryUnavailable };
+}
+
 pub fn parseNtfy(allocator: std.mem.Allocator, body: []const u8) Ntfy {
     var count: u64 = 0;
     var lines = std.mem.splitScalar(u8, body, '\n');
@@ -866,6 +888,7 @@ test "adapterForKind matches kinds case-insensitively and rejects unknown kinds"
     try std.testing.expectEqual(Adapter.sonarr, adapterForKind("sonarr").?);
     try std.testing.expectEqual(Adapter.prowlarr, adapterForKind("PROWLARR").?);
     try std.testing.expectEqual(Adapter.home_assistant, adapterForKind("home_assistant").?);
+    try std.testing.expectEqual(Adapter.trek, adapterForKind("TREK").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
 
@@ -898,15 +921,18 @@ test "credential requirements follow each adapter's auth method" {
     try std.testing.expectEqual(Auth.emby_token, authMethod(.jellyfin));
     try std.testing.expectEqual(Auth.subsonic, authMethod(.navidrome));
     try std.testing.expectEqual(Auth.session_cookie, authMethod(.vaultwarden));
+    try std.testing.expectEqual(Auth.none, authMethod(.trek));
     try std.testing.expect(requiresCredential(.sonarr));
     try std.testing.expect(requiresCredential(.calibre));
     try std.testing.expect(!requiresCredential(.adguard));
+    try std.testing.expect(!requiresCredential(.trek));
     try std.testing.expect(!requiresCredential(.ntfy));
 }
 
 test "request paths cover versioned APIs, encoded segments, and pathless adapters" {
     try std.testing.expectEqualStrings("/api/v3/system/status", systemStatusPath(.sonarr).?);
     try std.testing.expectEqualStrings("/api/v1/queue/status", arrQueueStatusPath(.lidarr).?);
+    try std.testing.expectEqualStrings("/api/_nest/health", systemStatusPath(.trek).?);
     try std.testing.expect(arrQueueStatusPath(.jellyfin) == null);
     try std.testing.expect(systemStatusPath(.mumble) == null);
 
@@ -1240,6 +1266,17 @@ test "parseTome reads currently reading and books read this year" {
     try std.testing.expectEqual(@as(u64, 0), empty.books_read_this_year);
 }
 
+test "parseTrek reads the public database health summary" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const item = try parseTrek(
+        arena_state.allocator(),
+        "{ \"ok\": true, \"runtime\": \"nestjs\", \"diInjected\": true, \"userCount\": 3 }",
+    );
+    try std.testing.expectEqual(@as(u64, 3), item.user_count);
+}
+
 fn expectParseFailure(result: anytype) !void {
     if (result) |_| return error.ExpectedParseFailure else |_| {}
 }
@@ -1271,6 +1308,9 @@ test "parsers reject incomplete and malformed payloads" {
     try expectParseFailure(parseNavidrome(arena, "{"));
     try expectParseFailure(parseSkaldi(arena, "{"));
     try expectParseFailure(parseTome(arena, "{"));
+    try expectParseFailure(parseTrek(arena, "{ \"ok\": false, \"userCount\": 3 }"));
+    try expectParseFailure(parseTrek(arena, "{ \"ok\": true, \"userCount\": null }"));
+    try expectParseFailure(parseTrek(arena, "{"));
 }
 
 test "parseStampSeconds trims and parses unix seconds" {
@@ -1373,6 +1413,10 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .tome = .{ .currently_reading = 2, .books_read_this_year = 12 } }).write(&aw.writer);
     try std.testing.expectEqualStrings("2 reading 12 yr", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .trek = .{ .user_count = 3 } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("3 users", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .mumble = .{ .users = 2, .max_users = 100 } }).write(&aw.writer);

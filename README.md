@@ -97,6 +97,7 @@ nix fmt
 | `calibre`        | `username:password`          | book count               |
 | `navidrome`      | `username:password`          | song count               |
 | `tome`           | none                         | reading, books this year |
+| `trek`           | none                         | registered users         |
 | `mumble`         | none                         | connected users          |
 | `attic`          | none                         | last-primed age (stamp)  |
 | `ntfy`           | none                         | new notifications (24h)  |

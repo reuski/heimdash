@@ -358,6 +358,11 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             defer gpa.free(overview_json);
             return .{ .tome = try summary.parseTome(parse_arena, overview_json) };
         },
+        .trek => {
+            const health_json = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
+            defer gpa.free(health_json);
+            return .{ .trek = try summary.parseTrek(parse_arena, health_json) };
+        },
         .ntfy => {
             const body = try fetchSummaryBody(&client, gpa, base_url, summary.systemStatusPath(adapter).?, &auth);
             defer gpa.free(body);
