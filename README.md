@@ -89,6 +89,7 @@ nix fmt
 | `lidarr`         | API key                      | queue count              |
 | `prowlarr`       | API key                      | indexers, health alerts  |
 | `qbittorrent`    | API key                      | transfer rates           |
+| `sabnzbd`        | API key                      | queue state and count    |
 | `home_assistant` | token + `entity`             | entity state             |
 | `audiobookshelf` | API token                    | book count, duration     |
 | `vaultwarden`    | admin token                  | registered users         |

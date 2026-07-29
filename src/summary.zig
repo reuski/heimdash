@@ -11,6 +11,7 @@ pub const Adapter = enum {
     jellyfin,
     adguard,
     qbittorrent,
+    sabnzbd,
     home_assistant,
     audiobookshelf,
     vaultwarden,
@@ -36,6 +37,7 @@ pub const Auth = enum {
     basic_optional,
     subsonic,
     session_cookie,
+    query_api_key,
 };
 
 pub fn authMethod(adapter: Adapter) Auth {
@@ -44,6 +46,7 @@ pub fn authMethod(adapter: Adapter) Auth {
         .sonarr, .radarr, .lidarr, .prowlarr => .api_key,
         .jellyfin => .emby_token,
         .qbittorrent, .home_assistant, .audiobookshelf => .bearer,
+        .sabnzbd => .query_api_key,
         .calibre => .basic,
         .adguard => .basic_optional,
         .navidrome => .subsonic,
@@ -85,6 +88,11 @@ pub const Qbittorrent = struct {
     version: []const u8,
     download_speed: u64,
     upload_speed: u64,
+};
+
+pub const Sabnzbd = struct {
+    queue_count: u64,
+    paused: bool,
 };
 
 pub const HomeAssistant = struct {
@@ -175,6 +183,7 @@ pub const Value = union(enum) {
     jellyfin: Jellyfin,
     adguard: AdGuard,
     qbittorrent: Qbittorrent,
+    sabnzbd: Sabnzbd,
     home_assistant: HomeAssistant,
     audiobookshelf: Audiobookshelf,
     vaultwarden: Vaultwarden,
@@ -204,6 +213,17 @@ pub const Value = union(enum) {
                 try w.writeAll("protection off");
             },
             .qbittorrent => |item| try format.transferSpeeds(w, item.download_speed, item.upload_speed),
+            .sabnzbd => |item| if (item.paused) {
+                if (item.queue_count == 0) {
+                    try w.writeAll("paused");
+                } else {
+                    try w.print("paused {d} queued", .{item.queue_count});
+                }
+            } else if (item.queue_count == 0) {
+                try w.writeAll("idle");
+            } else {
+                try w.print("{d} queued", .{item.queue_count});
+            },
             .home_assistant => |item| if (item.temperature) |temperature| {
                 try w.print("{d:.0}", .{temperature});
                 if (item.temperature_unit) |unit| try w.writeAll(unit);
@@ -291,6 +311,15 @@ const AdGuardStatsJson = struct {
 const QbittorrentTransferJson = struct {
     dl_info_speed: u64,
     up_info_speed: u64,
+};
+
+const SabnzbdQueueJson = struct {
+    paused: bool,
+    noofslots_total: u64,
+};
+
+const SabnzbdResponseJson = struct {
+    queue: SabnzbdQueueJson,
 };
 
 const HomeAssistantAttributesJson = struct {
@@ -398,6 +427,7 @@ pub fn adapterForKind(kind: []const u8) ?Adapter {
     if (std.ascii.eqlIgnoreCase(kind, "jellyfin")) return .jellyfin;
     if (std.ascii.eqlIgnoreCase(kind, "adguard")) return .adguard;
     if (std.ascii.eqlIgnoreCase(kind, "qbittorrent")) return .qbittorrent;
+    if (std.ascii.eqlIgnoreCase(kind, "sabnzbd")) return .sabnzbd;
     if (std.ascii.eqlIgnoreCase(kind, "home_assistant")) return .home_assistant;
     if (std.ascii.eqlIgnoreCase(kind, "audiobookshelf")) return .audiobookshelf;
     if (std.ascii.eqlIgnoreCase(kind, "vaultwarden")) return .vaultwarden;
@@ -423,6 +453,7 @@ pub fn systemStatusPath(adapter: Adapter) ?[]const u8 {
         .jellyfin => "/System/Info",
         .adguard => "/control/status",
         .qbittorrent => "/api/v2/app/version",
+        .sabnzbd => null,
         .home_assistant => null,
         .audiobookshelf => "/api/libraries",
         .vaultwarden => "/admin/users",
@@ -471,6 +502,14 @@ pub fn adguardStatsPath() []const u8 {
 
 pub fn qbittorrentTransferPath() []const u8 {
     return "/api/v2/transfer/info";
+}
+
+pub fn sabnzbdQueuePath(allocator: std.mem.Allocator, api_key: []const u8) ![]u8 {
+    var aw: Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    try aw.writer.writeAll("/api?mode=queue&limit=1&output=json&apikey=");
+    try writeFormValue(&aw.writer, api_key);
+    return try aw.toOwnedSlice();
 }
 
 pub fn homeAssistantStatePath(allocator: std.mem.Allocator, entity_id: []const u8) ![]u8 {
@@ -646,6 +685,16 @@ pub fn parseQbittorrent(allocator: std.mem.Allocator, version_text: []const u8, 
         .version = try allocator.dupe(u8, version),
         .download_speed = transfer.dl_info_speed,
         .upload_speed = transfer.up_info_speed,
+    };
+}
+
+pub fn parseSabnzbd(allocator: std.mem.Allocator, queue_json: []const u8) !Sabnzbd {
+    const parsed = try std.json.parseFromSliceLeaky(SabnzbdResponseJson, allocator, queue_json, .{
+        .ignore_unknown_fields = true,
+    });
+    return .{
+        .queue_count = parsed.queue.noofslots_total,
+        .paused = parsed.queue.paused,
     };
 }
 
@@ -888,6 +937,7 @@ test "adapterForKind matches kinds case-insensitively and rejects unknown kinds"
     try std.testing.expectEqual(Adapter.sonarr, adapterForKind("sonarr").?);
     try std.testing.expectEqual(Adapter.prowlarr, adapterForKind("PROWLARR").?);
     try std.testing.expectEqual(Adapter.home_assistant, adapterForKind("home_assistant").?);
+    try std.testing.expectEqual(Adapter.sabnzbd, adapterForKind("SABNZBD").?);
     try std.testing.expectEqual(Adapter.trek, adapterForKind("TREK").?);
     try std.testing.expect(adapterForKind("nextcloud") == null);
 }
@@ -921,9 +971,11 @@ test "credential requirements follow each adapter's auth method" {
     try std.testing.expectEqual(Auth.emby_token, authMethod(.jellyfin));
     try std.testing.expectEqual(Auth.subsonic, authMethod(.navidrome));
     try std.testing.expectEqual(Auth.session_cookie, authMethod(.vaultwarden));
+    try std.testing.expectEqual(Auth.query_api_key, authMethod(.sabnzbd));
     try std.testing.expectEqual(Auth.none, authMethod(.trek));
     try std.testing.expect(requiresCredential(.sonarr));
     try std.testing.expect(requiresCredential(.calibre));
+    try std.testing.expect(requiresCredential(.sabnzbd));
     try std.testing.expect(!requiresCredential(.adguard));
     try std.testing.expect(!requiresCredential(.trek));
     try std.testing.expect(!requiresCredential(.ntfy));
@@ -943,6 +995,13 @@ test "request paths cover versioned APIs, encoded segments, and pathless adapter
     const stats_path = try audiobookshelfStatsPath(std.testing.allocator, "lib_c1u6t4p45c35rf0nzd");
     defer std.testing.allocator.free(stats_path);
     try std.testing.expectEqualStrings("/api/libraries/lib_c1u6t4p45c35rf0nzd/stats", stats_path);
+
+    const queue_path = try sabnzbdQueuePath(std.testing.allocator, "a b&c=d%e?f\xC3\xA9");
+    defer std.testing.allocator.free(queue_path);
+    try std.testing.expectEqualStrings(
+        "/api?mode=queue&limit=1&output=json&apikey=a+b%26c%3Dd%25e%3Ff%C3%A9",
+        queue_path,
+    );
 }
 
 test "udpEndpoint parses udp urls and rejects malformed endpoints" {
@@ -1091,6 +1150,22 @@ test "parseQbittorrent reads version and transfer speeds" {
     try std.testing.expectEqualStrings("v5.0.3", item.version);
     try std.testing.expectEqual(@as(u64, 1048576), item.download_speed);
     try std.testing.expectEqual(@as(u64, 2048), item.upload_speed);
+}
+
+test "parseSabnzbd reads queue state and job count" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const active = try parseSabnzbd(
+        arena_state.allocator(),
+        "{ \"queue\": { \"paused\": false, \"noofslots_total\": 2, \"slots\": [ { \"nzo_id\": \"one\" } ], \"speed\": \"1.3 M\" } }",
+    );
+    try std.testing.expectEqual(@as(u64, 2), active.queue_count);
+    try std.testing.expect(!active.paused);
+
+    const paused = try parseSabnzbd(arena_state.allocator(), "{ \"queue\": { \"paused\": true, \"noofslots_total\": 0 } }");
+    try std.testing.expectEqual(@as(u64, 0), paused.queue_count);
+    try std.testing.expect(paused.paused);
 }
 
 test "parseHomeAssistant reads selected entity" {
@@ -1296,6 +1371,8 @@ test "parsers reject incomplete and malformed payloads" {
     try expectParseFailure(parseAdGuard(arena, "{ \"protection_enabled\": true }", "{"));
     try expectParseFailure(parseQbittorrent(arena, "\n", "{ \"dl_info_speed\": 1, \"up_info_speed\": 2 }"));
     try expectParseFailure(parseQbittorrent(arena, "v5", "{"));
+    try expectParseFailure(parseSabnzbd(arena, "{}"));
+    try expectParseFailure(parseSabnzbd(arena, "{ \"queue\": { \"paused\": false } }"));
     try expectParseFailure(parseHomeAssistant(arena, "{ \"entity_id\": \"sensor.kitchen\" }"));
     try expectParseFailure(parseHomeAssistant(arena, "{"));
     try expectParseFailure(parseAudiobookshelfBookLibraries(arena, "{"));
@@ -1349,6 +1426,22 @@ test "Value writes compact summary lines" {
     aw.clearRetainingCapacity();
     try (Value{ .qbittorrent = .{ .version = "v5.0.3", .download_speed = 1048576, .upload_speed = 2048 } }).write(&aw.writer);
     try std.testing.expectEqualStrings("\u{25BC} 1.0M/s \u{25B2} 2.0K/s", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .sabnzbd = .{ .queue_count = 3, .paused = false } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("3 queued", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .sabnzbd = .{ .queue_count = 3, .paused = true } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("paused 3 queued", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .sabnzbd = .{ .queue_count = 0, .paused = false } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("idle", aw.written());
+
+    aw.clearRetainingCapacity();
+    try (Value{ .sabnzbd = .{ .queue_count = 0, .paused = true } }).write(&aw.writer);
+    try std.testing.expectEqualStrings("paused", aw.written());
 
     aw.clearRetainingCapacity();
     try (Value{ .home_assistant = .{ .entity_name = "Kitchen", .entity_state = "21.4", .entity_unit = "C" } }).write(&aw.writer);

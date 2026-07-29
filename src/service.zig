@@ -193,7 +193,7 @@ const RequestAuth = struct {
         credential_value: ?[]const u8,
     ) !RequestAuth {
         switch (summary.authMethod(adapter)) {
-            .none, .subsonic => return .{},
+            .none, .subsonic, .query_api_key => return .{},
             .api_key => return withHeader("X-Api-Key", credential_value orelse return error.SummaryUnavailable),
             .emby_token => return withHeader("X-Emby-Token", credential_value orelse return error.SummaryUnavailable),
             .bearer => return .{
@@ -289,6 +289,17 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
             defer gpa.free(transfer_json);
             return .{ .qbittorrent = try summary.parseQbittorrent(parse_arena, version_text, transfer_json) };
         },
+        .sabnzbd => {
+            const api_key = credential_value orelse return error.SummaryUnavailable;
+            const queue_path = try summary.sabnzbdQueuePath(gpa, api_key);
+            defer {
+                @memset(queue_path, 0);
+                gpa.free(queue_path);
+            }
+            const queue_json = try fetchSummaryBody(&client, gpa, base_url, queue_path, &auth);
+            defer gpa.free(queue_json);
+            return .{ .sabnzbd = try summary.parseSabnzbd(parse_arena, queue_json) };
+        },
         .home_assistant => {
             const entity_id = entity orelse return error.SummaryUnavailable;
             const entity_path = try summary.homeAssistantStatePath(gpa, entity_id);
@@ -376,7 +387,10 @@ fn fetchSummaryValue(gpa: std.mem.Allocator, parse_arena: std.mem.Allocator, io:
 
 fn fetchSummaryBody(client: *http.Client, gpa: std.mem.Allocator, base_url: []const u8, path: []const u8, auth: *const RequestAuth) ![]u8 {
     const url = try endpointUrl(gpa, base_url, path);
-    defer gpa.free(url);
+    defer {
+        @memset(url, 0);
+        gpa.free(url);
+    }
 
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
