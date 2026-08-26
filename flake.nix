@@ -41,7 +41,7 @@
             buildPhase = ''
               runHook preBuild
               export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)
-              zig build install --prefix $out -Doptimize=ReleaseSafe
+              zig build install --prefix $out -Doptimize=ReleaseSafe -Dcpu=baseline
               runHook postBuild
             '';
 
@@ -63,7 +63,7 @@
             buildPhase = ''
               runHook preBuild
               export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)
-              zig build test
+              zig build test -Dcpu=baseline
               touch $out
               runHook postBuild
             '';
