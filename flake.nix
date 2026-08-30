@@ -14,7 +14,10 @@
   outputs =
     inputs@{ self, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-darwin"
+      ];
 
       imports = [ inputs.treefmt-nix.flakeModule ];
 
@@ -28,59 +31,66 @@
           inherit (pkgs) zig zls;
         in
         {
-          packages.default = pkgs.stdenv.mkDerivation {
-            pname = "heimdash";
-            version = "0.0.0";
-            src = ./.;
+          packages = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            default = pkgs.stdenv.mkDerivation {
+              pname = "heimdash";
+              version = "0.0.0";
+              src = ./.;
 
-            nativeBuildInputs = [ zig ];
+              nativeBuildInputs = [ zig ];
 
-            dontConfigure = true;
-            dontInstall = true;
+              dontConfigure = true;
+              dontInstall = true;
 
-            buildPhase = ''
-              runHook preBuild
-              export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)
-              zig build install --prefix $out -Doptimize=ReleaseSafe -Dcpu=baseline
-              runHook postBuild
-            '';
+              buildPhase = ''
+                runHook preBuild
+                export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)
+                zig build install --prefix $out -Doptimize=ReleaseSafe -Dcpu=baseline
+                runHook postBuild
+              '';
 
-            meta = {
-              description = "NixOS home-server dashboard (Zig + Datastar)";
-              homepage = "https://github.com/reuski/heimdash";
-              license = pkgs.lib.licenses.agpl3Only;
-              mainProgram = "heimdash";
-              platforms = pkgs.lib.platforms.linux;
+              meta = {
+                description = "NixOS home-server dashboard (Zig + Datastar)";
+                homepage = "https://github.com/reuski/heimdash";
+                license = pkgs.lib.licenses.agpl3Only;
+                mainProgram = "heimdash";
+                platforms = pkgs.lib.platforms.linux;
+              };
             };
           };
 
-          checks.unit-tests = pkgs.stdenv.mkDerivation {
-            name = "heimdash-unit-tests";
-            src = ./.;
-            nativeBuildInputs = [ zig ];
-            dontConfigure = true;
-            dontInstall = true;
-            buildPhase = ''
-              runHook preBuild
-              export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)
-              zig build test -Dcpu=baseline
-              touch $out
-              runHook postBuild
-            '';
+          checks = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            unit-tests = pkgs.stdenv.mkDerivation {
+              name = "heimdash-unit-tests";
+              src = ./.;
+              nativeBuildInputs = [ zig ];
+              dontConfigure = true;
+              dontInstall = true;
+              buildPhase = ''
+                runHook preBuild
+                export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)
+                zig build test -Dcpu=baseline
+                touch $out
+                runHook postBuild
+              '';
+            };
           };
 
-          apps.default = {
-            type = "app";
-            program = "${config.packages.default}/bin/heimdash";
+          apps = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            default = {
+              type = "app";
+              program = "${config.packages.default}/bin/heimdash";
+            };
           };
 
-          devShells.default = pkgs.mkShell {
+          devShells.default = pkgs.mkShellNoCC {
             packages = [
               zig
               zls
-              pkgs.gh
+              pkgs.nixd
               config.treefmt.build.wrapper
-            ];
+            ]
+            ++ (builtins.attrValues config.treefmt.build.programs);
           };
 
           treefmt = {

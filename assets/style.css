@@ -27,6 +27,8 @@
   --glow: rgba(255, 157, 66, 0.38);
   --glow-soft: rgba(255, 157, 66, 0.16);
   --meter-inset: rgba(0, 0, 0, 0.8);
+  --meter-ledge: rgba(255, 157, 66, 0.12);
+  --led-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 10'%3E%3Crect x='1' y='1' width='15' height='8' rx='2.2' ry='2.2' fill='black'/%3E%3C/svg%3E");
 
   --space-2xs: 0.25rem;
   --space-xs: 0.5rem;
@@ -42,9 +44,11 @@
   --text-lg: 1.25rem;
 
   --dot: 0.5rem;
-  --meter-gap: 0.0625rem;
-  --led-w: 0.1875rem;
-  --led-h: 0.25rem;
+  --meter-gap: 0.1875rem;
+  --meter-pad: 0.1875rem;
+  --led-pitch: clamp(0.75rem, 1.35cqi, 1rem);
+  --led-h: 0.5rem;
+  --led-glow: 0.1875rem;
   --spark-h: 1.5rem;
   --spark-stroke: 1px;
   --spark-glow: 3px;
@@ -369,10 +373,10 @@ ul {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   grid-template-rows: auto auto;
-  align-items: start;
-  gap: var(--space-2xs) var(--space-sm);
-  min-height: 2.375rem;
-  padding: var(--space-xs) 0;
+  align-items: center;
+  gap: 0.375rem var(--space-sm);
+  min-height: 2.75rem;
+  padding: 0.625rem 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -399,7 +403,9 @@ ul {
 #metrics .label {
   min-width: 0;
   color: var(--fg);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   text-transform: uppercase;
@@ -412,41 +418,73 @@ ul {
   grid-row: 1;
   align-self: stretch;
   align-content: center;
-  gap: var(--space-2xs);
+  gap: calc(var(--meter-gap) + 0.0625rem);
   min-width: 0;
 }
 
 #metrics .bar {
   display: grid;
+  position: relative;
   min-width: 0;
   gap: var(--meter-gap);
-  padding: var(--meter-gap);
-  background: var(--panel-raised);
+  padding: var(--meter-pad);
+  background:
+    linear-gradient(180deg, var(--meter-ledge), transparent 38%),
+    var(--panel-raised);
   border: 1px solid var(--border-strong);
-  box-shadow: inset 0 0 0 1px var(--meter-inset);
+  border-radius: 0.25rem;
+  box-shadow:
+    inset 0 0 0 1px var(--meter-inset),
+    inset 0 0 14px var(--meter-inset);
 }
 
 #metrics .meter {
+  position: relative;
+  min-width: 0;
   height: var(--led-h);
-  background-image:
-    repeating-linear-gradient(
-      90deg,
-      var(--metric-state-color) 0 var(--led-w),
-      transparent var(--led-w) calc(var(--led-w) + var(--meter-gap))
-    ),
-    repeating-linear-gradient(
-      90deg,
-      var(--led-off) 0 var(--led-w),
-      transparent var(--led-w) calc(var(--led-w) + var(--meter-gap))
-    );
-  background-repeat: no-repeat;
-  background-size:
-    var(--pct, 0%) 100%,
-    100% 100%;
+  overflow: hidden;
+  background: var(--bg);
+  border-radius: 0.1875rem;
+  box-shadow: inset 0 1px 0 var(--meter-ledge);
+}
+
+#metrics .meter::before,
+#metrics .meter::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-repeat: repeat-x;
+  background-size: var(--led-pitch) 100%;
+  mask-image: var(--led-mask);
+  mask-repeat: repeat-x;
+  mask-size: var(--led-pitch) 100%;
+  -webkit-mask-image: var(--led-mask);
+  -webkit-mask-repeat: repeat-x;
+  -webkit-mask-size: var(--led-pitch) 100%;
+}
+
+#metrics .meter::before {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--led-off) 72%, var(--metric-state-color)),
+    var(--led-off)
+  );
+  opacity: 0.85;
+}
+
+#metrics .meter::after {
+  width: var(--pct, 0%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--metric-state-color) 78%, var(--fg)),
+    var(--metric-state-color) 54%,
+    color-mix(in srgb, var(--metric-state-color) 82%, var(--bg))
+  );
+  filter: drop-shadow(0 0 var(--led-glow) var(--metric-state-glow));
 }
 
 #metrics .meter:only-child {
-  height: calc(2 * var(--led-h) + var(--meter-gap));
+  height: calc(var(--led-h) + 0.1875rem);
 }
 
 #metrics .meter.is-down {
@@ -494,14 +532,17 @@ ul {
 #metrics .free {
   grid-column: 1 / -1;
   grid-row: 2;
+  align-self: center;
   min-width: 0;
-  color: var(--metric-state-color);
-  font-size: var(--text-sm);
+  color: color-mix(in srgb, var(--metric-state-color) 82%, var(--fg));
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  line-height: 1;
   overflow: hidden;
   text-align: left;
   text-overflow: ellipsis;
-  text-shadow: 0 0 8px var(--metric-state-glow);
+  text-shadow: 0 0 4px var(--metric-state-glow);
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -627,6 +668,13 @@ ul {
     padding: var(--space-lg);
   }
 
+  #metrics {
+    --led-pitch: 0.75rem;
+    --led-h: 0.5rem;
+    --meter-gap: 0.125rem;
+    --meter-pad: 0.125rem;
+  }
+
   #hostline {
     grid-template-columns: 1fr;
     gap: var(--space-xs);
@@ -649,6 +697,11 @@ ul {
 }
 
 @container metrics (min-width: 38rem) {
+  #metrics {
+    --led-pitch: clamp(0.875rem, 1.15cqi, 1.125rem);
+    --led-h: 0.5625rem;
+  }
+
   #metrics li {
     grid-template-columns: minmax(10ch, 18ch) minmax(0, 1fr) minmax(18ch, 22ch);
     grid-template-rows: auto;
