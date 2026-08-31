@@ -16,6 +16,7 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "x86_64-linux"
+        "aarch64-linux"
         "aarch64-darwin"
       ];
 
@@ -31,7 +32,7 @@
           inherit (pkgs) zig zls;
         in
         {
-          packages = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          packages = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             default = pkgs.stdenv.mkDerivation {
               pname = "heimdash";
               version = "0.0.0";
@@ -59,7 +60,7 @@
             };
           };
 
-          checks = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          checks = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             unit-tests = pkgs.stdenv.mkDerivation {
               name = "heimdash-unit-tests";
               src = ./.;
@@ -76,7 +77,7 @@
             };
           };
 
-          apps = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          apps = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             default = {
               type = "app";
               program = "${config.packages.default}/bin/heimdash";
