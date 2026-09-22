@@ -95,7 +95,7 @@ pub fn services(w: *Io.Writer, data: Services) !void {
         try w.writeAll(serviceReachabilityClass(state));
         try w.writeAll("\"><a href=\"");
         try format.escape(w, svc.url);
-        try w.writeAll("\"><span class=\"service-name\">");
+        try w.writeAll("\" referrerpolicy=\"no-referrer\"><span class=\"service-name\">");
         try format.escape(w, svc.name);
         try w.writeAll("</span><span class=\"service-summary\">");
         try format.escape(w, summary_text);
@@ -259,7 +259,7 @@ test "service card rendering preserves state summary and escaping" {
     try services(&aw.writer, .{ .items = &service_items, .states = &states, .summaries = &summaries });
 
     try std.testing.expectEqualStrings(
-        "<ul id=\"services\"><li class=\"is-up\"><a href=\"http://nas.invalid/?q=&quot;status&quot;\"><span class=\"service-name\">NAS &lt;main&gt;</span><span class=\"service-summary\">v1 &amp; idle</span><span class=\"service-state\">up</span></a></li></ul>",
+        "<ul id=\"services\"><li class=\"is-up\"><a href=\"http://nas.invalid/?q=&quot;status&quot;\" referrerpolicy=\"no-referrer\"><span class=\"service-name\">NAS &lt;main&gt;</span><span class=\"service-summary\">v1 &amp; idle</span><span class=\"service-state\">up</span></a></li></ul>",
         aw.written(),
     );
 }
@@ -272,7 +272,7 @@ test "service card defaults to checking without summaries" {
     try services(&aw.writer, .{ .items = &service_items });
 
     try std.testing.expectEqualStrings(
-        "<ul id=\"services\"><li class=\"is-checking\"><a href=\"http://jellyfin.invalid\"><span class=\"service-name\">Jellyfin</span><span class=\"service-summary\"></span><span class=\"service-state\">checking</span></a></li></ul>",
+        "<ul id=\"services\"><li class=\"is-checking\"><a href=\"http://jellyfin.invalid\" referrerpolicy=\"no-referrer\"><span class=\"service-name\">Jellyfin</span><span class=\"service-summary\"></span><span class=\"service-state\">checking</span></a></li></ul>",
         aw.written(),
     );
 }
