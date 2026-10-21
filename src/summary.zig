@@ -838,7 +838,7 @@ pub fn udpEndpoint(url: []const u8) !UdpEndpoint {
 }
 
 pub fn mumblePingRequest(ident: u64) [12]u8 {
-    var request = [_]u8{0} ** 12;
+    var request: [12]u8 = @splat(0);
     std.mem.writeInt(u64, request[4..12], ident, .big);
     return request;
 }
