@@ -5,30 +5,30 @@
   --panel: #0e0a07;
   --panel-raised: #140d08;
   --fg: #ffe7c8;
-  --dim: #8f7258;
-  --muted: #5e4b3a;
+  --dim: #ad8d6d;
   --accent: #ff9d42;
   --accent-dim: #9a582c;
   --border: #332316;
   --border-strong: #9f6436;
   --led-off: #1f130b;
 
-  --status-ok: #4fd47a;
-  --status-warn: #ffc24d;
-  --status-critical: #ff5a4d;
+  --status-ok: #4dff8a;
+  --status-warn: #ffd49a;
+  --status-critical: #ff7048;
   --status-unknown: var(--dim);
-  --glow-ok: rgba(79, 212, 122, 0.35);
-  --glow-warn: rgba(255, 194, 77, 0.38);
-  --glow-critical: rgba(255, 90, 77, 0.42);
+  --glow-ok: rgba(77, 255, 138, 0.2);
+  --glow-warn: rgba(255, 212, 154, 0.2);
+  --glow-critical: rgba(255, 112, 72, 0.24);
   --glow-unknown: rgba(143, 114, 88, 0.22);
 
-  --scanline: rgba(255, 157, 66, 0.055);
-  --scanline-dark: rgba(0, 0, 0, 0.28);
+  --scanline-dark: rgba(0, 0, 0, 0.14);
   --glow: rgba(255, 157, 66, 0.38);
   --glow-soft: rgba(255, 157, 66, 0.16);
-  --meter-inset: rgba(0, 0, 0, 0.8);
-  --meter-ledge: rgba(255, 157, 66, 0.12);
-  --led-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 10'%3E%3Crect x='1' y='1' width='15' height='8' rx='2.2' ry='2.2' fill='black'/%3E%3C/svg%3E");
+  --led-mask: repeating-linear-gradient(
+    90deg,
+    #000 0 calc(var(--led-pitch) - var(--led-gap)),
+    transparent calc(var(--led-pitch) - var(--led-gap)) var(--led-pitch)
+  );
 
   --space-2xs: 0.25rem;
   --space-xs: 0.5rem;
@@ -44,20 +44,17 @@
   --text-lg: 1.25rem;
 
   --dot: 0.5rem;
-  --meter-gap: 0.1875rem;
-  --meter-pad: 0.1875rem;
-  --led-pitch: clamp(0.75rem, 1.35cqi, 1rem);
-  --led-h: 0.5rem;
-  --led-glow: 0.1875rem;
+  --meter-gap: 2px;
+  --meter-pad: 3px;
+  --led-pitch: 14px;
+  --led-gap: 2px;
+  --led-h: 6px;
   --spark-h: 1.5rem;
   --spark-stroke: 1px;
-  --spark-glow: 3px;
-  --spark-color: #4dff8a;
-  --spark-glow-color: rgba(77, 255, 138, 0.45);
-  --spark-bg: rgba(77, 255, 138, 0.04);
-  --spark-grid: rgba(77, 255, 138, 0.07);
-  --title-gap: 6.5rem;
-  --bracket: 1.125rem;
+  --spark-glow: 1px;
+  --spark-color: var(--accent);
+  --spark-glow-color: var(--glow-soft);
+  --spark-bg: rgba(255, 157, 66, 0.025);
   --tile-min: 12rem;
   --tile-h: 5rem;
   --tile-max: 6rem;
@@ -85,13 +82,11 @@ body::before {
   inset: 0;
   z-index: 10;
   pointer-events: none;
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      var(--scanline-dark) 0 1px,
-      transparent 1px 4px
-    ),
-    repeating-linear-gradient(90deg, transparent 0 2px, var(--scanline) 2px 3px);
+  background-image: repeating-linear-gradient(
+    0deg,
+    var(--scanline-dark) 0 1px,
+    transparent 1px 4px
+  );
 }
 
 ::selection {
@@ -102,7 +97,7 @@ body::before {
 main {
   min-height: 100svh;
   display: grid;
-  padding: clamp(var(--space-xs), 1.5vw, var(--space-md));
+  padding: round(down, clamp(var(--space-xs), 1.5vw, var(--space-md)), 1px);
   background: var(--bg);
 }
 
@@ -111,13 +106,11 @@ main {
   min-width: 0;
   min-height: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   background: var(--panel);
   border: 1px solid var(--border-strong);
   border-top: 0;
-  box-shadow:
-    0 0 0 1px var(--bg),
-    inset 0 0 32px var(--glow-soft);
 }
 
 .terminal::before {
@@ -127,34 +120,6 @@ main {
   z-index: 1;
   pointer-events: none;
   border: 1px solid var(--border);
-  background-image:
-    linear-gradient(var(--border-strong) 0 0),
-    linear-gradient(var(--border-strong) 0 0),
-    linear-gradient(var(--border-strong) 0 0),
-    linear-gradient(var(--border-strong) 0 0),
-    linear-gradient(var(--border-strong) 0 0),
-    linear-gradient(var(--border-strong) 0 0),
-    linear-gradient(var(--border-strong) 0 0),
-    linear-gradient(var(--border-strong) 0 0);
-  background-repeat: no-repeat;
-  background-size:
-    var(--bracket) 1px,
-    1px var(--bracket),
-    var(--bracket) 1px,
-    1px var(--bracket),
-    var(--bracket) 1px,
-    1px var(--bracket),
-    var(--bracket) 1px,
-    1px var(--bracket);
-  background-position:
-    top left,
-    top left,
-    top right,
-    top right,
-    bottom left,
-    bottom left,
-    bottom right,
-    bottom right;
 }
 
 .terminal::after {
@@ -166,12 +131,7 @@ main {
   z-index: 2;
   height: 1px;
   pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    var(--border-strong) 0 calc(50% - var(--title-gap)),
-    transparent calc(50% - var(--title-gap)) calc(50% + var(--title-gap)),
-    var(--border-strong) calc(50% + var(--title-gap)) 100%
-  );
+  background: var(--border-strong);
 }
 
 .frame-title {
@@ -180,6 +140,7 @@ main {
   left: 50%;
   z-index: 4;
   padding: 0 var(--space-md);
+  background: var(--panel);
   color: var(--accent);
   font-size: var(--text-sm);
   font-weight: 700;
@@ -197,6 +158,8 @@ main {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
   min-height: 3.5rem;
   padding: var(--space-md) var(--space-2xl) 0;
   border-bottom: 1px solid var(--border);
@@ -320,6 +283,7 @@ main {
 
 #metrics {
   container: metrics / inline-size;
+  width: round(down, 100%, 1px);
 }
 
 .service-panel {
@@ -368,7 +332,6 @@ ul {
 
 #metrics li {
   --metric-state-color: var(--status-unknown);
-  --metric-state-glow: var(--glow-unknown);
 
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
@@ -382,22 +345,14 @@ ul {
 
 #metrics li.is-ok {
   --metric-state-color: var(--status-ok);
-  --metric-state-glow: var(--glow-ok);
 }
 
 #metrics li.is-warn {
   --metric-state-color: var(--status-warn);
-  --metric-state-glow: var(--glow-warn);
 }
 
 #metrics li.is-critical {
   --metric-state-color: var(--status-critical);
-  --metric-state-glow: var(--glow-critical);
-}
-
-#metrics li.is-unknown {
-  --metric-state-color: var(--status-unknown);
-  --metric-state-glow: var(--glow-unknown);
 }
 
 #metrics .label {
@@ -418,24 +373,32 @@ ul {
   grid-row: 1;
   align-self: stretch;
   align-content: center;
-  gap: calc(var(--meter-gap) + 0.0625rem);
+  justify-self: end;
+  gap: var(--space-xs);
   min-width: 0;
+  /* Reserve the frame and omit the final gap so both ends are whole LEDs. */
+  width: calc(
+    round(
+        down,
+        calc(100% - 2 * var(--meter-pad) - 2px + var(--led-gap)),
+        var(--led-pitch)
+      ) +
+      2 * var(--meter-pad) + 2px - var(--led-gap)
+  );
 }
 
 #metrics .bar {
   display: grid;
+  align-content: center;
   position: relative;
   min-width: 0;
+  min-height: calc(
+    2 * var(--led-h) + var(--meter-gap) + 2 * var(--meter-pad) + 2px
+  );
   gap: var(--meter-gap);
   padding: var(--meter-pad);
-  background:
-    linear-gradient(180deg, var(--meter-ledge), transparent 38%),
-    var(--panel-raised);
+  background: var(--bg);
   border: 1px solid var(--border-strong);
-  border-radius: 0.25rem;
-  box-shadow:
-    inset 0 0 0 1px var(--meter-inset),
-    inset 0 0 14px var(--meter-inset);
 }
 
 #metrics .meter {
@@ -444,8 +407,6 @@ ul {
   height: var(--led-h);
   overflow: hidden;
   background: var(--bg);
-  border-radius: 0.1875rem;
-  box-shadow: inset 0 1px 0 var(--meter-ledge);
 }
 
 #metrics .meter::before,
@@ -453,38 +414,16 @@ ul {
   content: "";
   position: absolute;
   inset: 0;
-  background-repeat: repeat-x;
-  background-size: var(--led-pitch) 100%;
   mask-image: var(--led-mask);
-  mask-repeat: repeat-x;
-  mask-size: var(--led-pitch) 100%;
-  -webkit-mask-image: var(--led-mask);
-  -webkit-mask-repeat: repeat-x;
-  -webkit-mask-size: var(--led-pitch) 100%;
 }
 
 #metrics .meter::before {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--led-off) 72%, var(--metric-state-color)),
-    var(--led-off)
-  );
-  opacity: 0.85;
+  background: var(--led-off);
 }
 
 #metrics .meter::after {
-  width: var(--pct, 0%);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--metric-state-color) 78%, var(--fg)),
-    var(--metric-state-color) 54%,
-    color-mix(in srgb, var(--metric-state-color) 82%, var(--bg))
-  );
-  filter: drop-shadow(0 0 var(--led-glow) var(--metric-state-glow));
-}
-
-#metrics .meter:only-child {
-  height: calc(var(--led-h) + 0.1875rem);
+  width: round(up, var(--pct, 0%), var(--led-pitch));
+  background: var(--metric-state-color);
 }
 
 #metrics .meter.is-down {
@@ -495,16 +434,19 @@ ul {
   --metric-state-color: var(--status-warn);
 }
 
+#metrics li.is-critical .bar {
+  border-color: var(--status-critical);
+}
+
+#metrics li.is-critical .free {
+  font-weight: 700;
+}
+
 #metrics .spark {
   min-width: 0;
   height: var(--spark-h);
   background-color: var(--spark-bg);
-  background-image:
-    linear-gradient(0deg, var(--spark-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--spark-grid) 1px, transparent 1px);
-  background-size:
-    100% 33.333%,
-    2rem 100%;
+  border-bottom: 1px solid var(--border);
 }
 
 #metrics .spark-svg {
@@ -522,8 +464,8 @@ ul {
   fill: none;
   stroke: var(--spark-color);
   stroke-width: var(--spark-stroke);
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  stroke-linecap: butt;
+  stroke-linejoin: miter;
   opacity: 0.8;
   vector-effect: non-scaling-stroke;
   filter: drop-shadow(0 0 var(--spark-glow) var(--spark-glow-color));
@@ -540,9 +482,8 @@ ul {
   letter-spacing: 0.06em;
   line-height: 1;
   overflow: hidden;
-  text-align: left;
+  text-align: right;
   text-overflow: ellipsis;
-  text-shadow: 0 0 4px var(--metric-state-glow);
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -654,10 +595,6 @@ ul {
     padding: var(--space-xs);
   }
 
-  .terminal {
-    --title-gap: 5.25rem;
-  }
-
   .titlebar {
     min-height: 3.25rem;
     padding: var(--space-sm) var(--space-lg) 0;
@@ -666,13 +603,6 @@ ul {
   .screen {
     gap: var(--space-md);
     padding: var(--space-lg);
-  }
-
-  #metrics {
-    --led-pitch: 0.75rem;
-    --led-h: 0.5rem;
-    --meter-gap: 0.125rem;
-    --meter-pad: 0.125rem;
   }
 
   #hostline {
@@ -697,11 +627,6 @@ ul {
 }
 
 @container metrics (min-width: 38rem) {
-  #metrics {
-    --led-pitch: clamp(0.875rem, 1.15cqi, 1.125rem);
-    --led-h: 0.5625rem;
-  }
-
   #metrics li {
     grid-template-columns: minmax(10ch, 18ch) minmax(0, 1fr) minmax(18ch, 22ch);
     grid-template-rows: auto;
